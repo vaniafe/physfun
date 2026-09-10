@@ -1,6 +1,8 @@
 /* ============================================================
    physfun.ru — панель учителя (статический сайт для Vercel)
-   Работает с Supabase: ученики, задания, проверка работ, статистика
+   Работает с Supabase: ученики, задания, календарь, проверка
+   работ, статистика
+   Версия 2: календарь классов, удаление учеников, ОГЭ/ЕГЭ
    ============================================================ */
 
 const cfg = window.PHYSFUN_CONFIG;
@@ -18,16 +20,23 @@ const STATUS_LABELS = {
     graded:  { text: "📝 Оценено",  cls: "badge-graded" },
 };
 
+const MONTHS_RU = ["Январь", "Февраль", "Март", "Апрель", "Май", "Июнь",
+    "Июль", "Август", "Сентябрь", "Октябрь", "Ноябрь", "Декабрь"];
+
 /* --- состояние --- */
 const state = {
     user: null,
     students: [],
     homeworks: [],
     submissions: [],
-    tab: "students",          // students | homeworks | stats
+    calendar: [],
+    tab: "students",
     school: null,
     classNumber: null,
     selectedStudent: null,
+    calSchool: null,
+    calClass: null,
+    calMonthIndex: 0,
 };
 
 /* ---------- утилиты ---------- */
@@ -61,23 +70,54 @@ function avatarHtml(url, large = false) {
         onerror="this.outerHTML='<div class=&quot;${fallback}&quot;>🧑‍🎓</div>'">`;
 }
 
+function examLabel(classNumber) {
+    const c = String(classNumber || "");
+    if (c.startsWith("9")) return "ОГЭ";
+    if (c.startsWith("10") || c.startsWith("11")) return "ЕГЭ";
+    return null;
+}
+
+function storagePath(url, bucket) {
+    if (!url) return null;
+    const marker = `/object/public/${bucket}/`;
+    const idx = url.indexOf(marker);
+    if (idx === -1) return null;
+    return url.slice(idx + marker.length).split("?")[0];
+}
+
+function academicMonths() {
+    const now = new Date();
+    const y0 = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
+    const arr = [];
+    for (let m = 8; m <= 11; m++) arr.push({ year: y0, month: m });
+    for (let m = 0; m <= 4; m++) arr.push({ year: y0 + 1, month: m });
+    return arr;
+}
+
+function calKey(school, cls, dateStr) {
+    return `${school}|${cls}|${dateStr}`;
+}
+
 /* ---------- загрузка данных ---------- */
 async function loadData() {
     content.innerHTML = `<div class="loading">Загрузка…</div>`;
-    const [st, hw, sub] = await Promise.all([
+    const [st, hw, sub, cal] = await Promise.all([
         sb.from("students").select("*").order("last_name"),
         sb.from("homeworks").select("*").order("due_date", { ascending: false }),
         sb.from("submissions").select("*").order("submitted_at", { ascending: false }),
+        sb.from("class_calendar").select("*"),
     ]);
-    if (st.error || hw.error || sub.error) {
+    const err = st.error || hw.error || sub.error || cal.error;
+    if (err) {
         content.innerHTML = `<div class="error-msg" style="margin:30px 0">Ошибка загрузки данных.
-            Проверьте config.js и что выполнен скрипт supabase_security.sql.<br>
-            ${esc(st.error?.message || hw.error?.message || sub.error?.message || "")}</div>`;
+            Проверьте config.js и что выполнены скрипты supabase_security.sql
+            и supabase_update_v2.sql.<br>${esc(err.message)}</div>`;
         return;
     }
     state.students = st.data || [];
     state.homeworks = hw.data || [];
     state.submissions = sub.data || [];
+    state.calendar = cal.data || [];
     render();
 }
 
@@ -101,6 +141,7 @@ function render() {
 
     if (state.tab === "students") renderStudentsPage();
     else if (state.tab === "homeworks") renderHomeworksPage();
+    else if (state.tab === "calendar") renderCalendarPage();
     else if (state.tab === "stats") renderStatsPage();
 }
 
@@ -142,6 +183,7 @@ function renderStudentsPage() {
 
     grid.innerHTML = list.map((s) => `
         <div class="student-card" data-id="${s.id}">
+            ${s.exam_flag && examLabel(s.class_number) ? `<div class="exam-badge">${examLabel(s.class_number)}</div>` : ""}
             ${avatarHtml(s.avatar_url)}
             <div class="student-name">${esc(s.last_name)}<br>${esc(s.first_name)}</div>
             <div class="student-class">${esc(s.class_number)} класс</div>
@@ -158,16 +200,42 @@ function homeworkById(id) {
     return state.homeworks.find((h) => h.id === id);
 }
 
-/* группировка работ по дате сдачи (или дате отправки) */
 function groupSubmissions(studentId) {
     const groups = new Map();
     state.submissions.filter((s) => s.student_id === studentId).forEach((sub) => {
         const hw = homeworkById(sub.homework_id);
-        const key = hw?.due_date || (sub.submitted_at ? String(sub.submitted_at).slice(0, 10) : null) || "Без даты";
+        const key = sub.due_date
+            || hw?.due_date
+            || (sub.submitted_at ? String(sub.submitted_at).slice(0, 10) : null)
+            || "Без даты";
         if (!groups.has(key)) groups.set(key, []);
         groups.get(key).push(sub);
     });
     return [...groups.entries()].sort((a, b) => (a[0] === "Без даты" ? -1 : b[0] === "Без даты" ? 1 : b[0].localeCompare(a[0])));
+}
+
+async function deleteStudent(student) {
+    const subs = state.submissions.filter((s) => s.student_id === student.id);
+
+    const avatarPath = storagePath(student.avatar_url, "avatars");
+    if (avatarPath) {
+        try { await sb.storage.from("avatars").remove([avatarPath]); } catch (e) { }
+    }
+    const photoPaths = subs
+        .map((s) => storagePath(s.photo_url, "homework-photos"))
+        .filter(Boolean);
+    if (photoPaths.length) {
+        try { await sb.storage.from("homework-photos").remove(photoPaths); } catch (e) { }
+    }
+
+    const { error } = await sb.from("students").delete().eq("id", student.id);
+    if (error) return toast("Ошибка удаления: " + error.message, true);
+
+    state.students = state.students.filter((s) => s.id !== student.id);
+    state.submissions = state.submissions.filter((s) => s.student_id !== student.id);
+    state.selectedStudent = null;
+    toast("Ученик удалён");
+    render();
 }
 
 function renderStudentPage(studentId) {
@@ -176,6 +244,7 @@ function renderStudentPage(studentId) {
 
     const subs = state.submissions.filter((s) => s.student_id === studentId);
     const groups = groupSubmissions(studentId);
+    const exam = examLabel(st.class_number);
 
     content.innerHTML = `
         <div class="back-row"><button class="btn" id="back-btn">← Назад к списку</button></div>
@@ -187,18 +256,39 @@ function renderStudentPage(studentId) {
                 <div class="profile-meta">🏫 ${esc(st.school)} &nbsp;|&nbsp; 📚 ${esc(st.class_number)} класс</div>
                 <div class="profile-count">Всего работ: ${subs.length}</div>
             </div>
+            <div class="profile-actions">
+                <button class="btn btn-delete" id="delete-btn">🗑 Удалить ученика</button>
+            </div>
         </div>
 
         <label class="flag-row">
             <input type="checkbox" id="photo-flag" ${st.needs_avatar_update ? "checked" : ""}>
-            📸 Требовать смену фото профиля
+            Сменить фото профиля
         </label>
+
+        ${exam ? `
+        <label class="flag-row">
+            <input type="checkbox" id="exam-flag" ${st.exam_flag ? "checked" : ""}>
+            ${exam === "ОГЭ" ? "📘 ОГЭ" : "🎓 ЕГЭ"}
+        </label>` : ""}
 
         <h2 class="page-title" style="font-size:19px">📸 Домашние задания</h2>
         <div id="works"></div>
     `;
 
     $("#back-btn").addEventListener("click", () => { state.selectedStudent = null; render(); });
+
+    $("#delete-btn").addEventListener("click", async () => {
+        const ok = confirm(
+            `Удалить ученика ${st.last_name} ${st.first_name}?\n\n` +
+            `Будут удалены: профиль, аватарка и ${subs.length} отправленных работ.\n` +
+            `Действие необратимо!`
+        );
+        if (!ok) return;
+        $("#delete-btn").disabled = true;
+        $("#delete-btn").textContent = "⏳ Удаление…";
+        await deleteStudent(st);
+    });
 
     $("#photo-flag").addEventListener("change", async (e) => {
         const { error } = await sb.from("students")
@@ -207,9 +297,23 @@ function renderStudentPage(studentId) {
         if (error) { toast("Ошибка сохранения", true); e.target.checked = !e.target.checked; }
         else {
             st.needs_avatar_update = e.target.checked;
-            toast(e.target.checked ? "Требование обновления фото установлено" : "Требование снято");
+            toast(e.target.checked ? "Требование смены фото установлено" : "Требование снято");
         }
     });
+
+    const examBox = $("#exam-flag");
+    if (examBox) {
+        examBox.addEventListener("change", async (e) => {
+            const { error } = await sb.from("students")
+                .update({ exam_flag: e.target.checked })
+                .eq("id", studentId);
+            if (error) { toast("Ошибка сохранения", true); e.target.checked = !e.target.checked; }
+            else {
+                st.exam_flag = e.target.checked;
+                toast(e.target.checked ? `${exam} отмечено` : `${exam} снято`);
+            }
+        });
+    }
 
     const works = $("#works");
     if (!groups.length) {
@@ -276,7 +380,6 @@ function renderStudentPage(studentId) {
         works.appendChild(block);
     });
 
-    /* клик по фото — на весь экран */
     works.querySelectorAll(".photos-grid img").forEach((img) =>
         img.addEventListener("click", () => {
             const lb = document.createElement("div");
@@ -284,6 +387,96 @@ function renderStudentPage(studentId) {
             lb.innerHTML = `<img src="${img.src}">`;
             lb.addEventListener("click", () => lb.remove());
             document.body.appendChild(lb);
+        }));
+}
+
+/* ===================== КАЛЕНДАРЬ ===================== */
+function renderCalendarPage() {
+    const schools = Object.keys(SCHOOLS_CONFIG);
+    if (!state.calSchool || !SCHOOLS_CONFIG[state.calSchool]) state.calSchool = schools[0];
+    if (!state.calClass || !SCHOOLS_CONFIG[state.calSchool].includes(state.calClass)) {
+        state.calClass = SCHOOLS_CONFIG[state.calSchool][0];
+    }
+
+    const months = academicMonths();
+    if (state.calMonthIndex < 0) state.calMonthIndex = 0;
+    if (state.calMonthIndex > months.length - 1) state.calMonthIndex = months.length - 1;
+    const { year, month } = months[state.calMonthIndex];
+
+    const marked = new Set(
+        state.calendar
+            .filter((r) => r.school === state.calSchool && r.class_number === state.calClass)
+            .map((r) => r.date)
+    );
+
+    const daysInMonth = new Date(year, month + 1, 0).getDate();
+    const firstOffset = (new Date(year, month, 1).getDay() + 6) % 7;
+    const todayStr = new Date().toISOString().slice(0, 10);
+
+    let cells = "";
+    for (let i = 0; i < firstOffset; i++) cells += `<button class="cal-day cal-empty" disabled></button>`;
+    for (let d = 1; d <= daysInMonth; d++) {
+        const dateStr = `${year}-${String(month + 1).padStart(2, "0")}-${String(d).padStart(2, "0")}`;
+        const classes = ["cal-day"];
+        if (marked.has(dateStr)) classes.push("marked");
+        if (dateStr === todayStr) classes.push("today");
+        cells += `<button class="${classes.join(" ")}" data-date="${dateStr}">${d}</button>`;
+    }
+
+    content.innerHTML = `
+        <h2 class="page-title">🗓️ Календарь сдачи работ</h2>
+        <div class="sub-tabs" id="cal-school-tabs">
+            ${schools.map((sc) => `<button class="sub-tab ${sc === state.calSchool ? "active" : ""}" data-school="${esc(sc)}">${esc(sc)}</button>`).join("")}
+        </div>
+        <div class="sub-tabs" id="cal-class-tabs">
+            ${SCHOOLS_CONFIG[state.calSchool].map((c) => `<button class="sub-tab ${c === state.calClass ? "active" : ""}" data-class="${esc(c)}">${esc(c)} класс</button>`).join("")}
+        </div>
+
+        <div class="form-card calendar-card">
+            <div class="cal-header">
+                <button class="cal-nav" id="cal-prev" ${state.calMonthIndex === 0 ? "disabled" : ""}>‹</button>
+                <div class="cal-title">${MONTHS_RU[month].toLowerCase()} ${year}</div>
+                <button class="cal-nav" id="cal-next" ${state.calMonthIndex === months.length - 1 ? "disabled" : ""}>›</button>
+            </div>
+            <div class="cal-grid">
+                ${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((w, i) =>
+                    `<div class="cal-weekday ${i >= 5 ? "weekend" : ""}">${w}</div>`).join("")}
+                ${cells}
+            </div>
+            <div class="cal-hint">
+                💡 Нажмите на число, чтобы отметить его как день сдачи домашнего задания
+                (ещё раз — снять отметку). Отмечено: <strong>${marked.size}</strong>.
+                Эти даты ученик выбирает в Telegram-боте при отправке работы.
+            </div>
+        </div>
+    `;
+
+    document.querySelectorAll("#cal-school-tabs .sub-tab").forEach((b) =>
+        b.addEventListener("click", () => { state.calSchool = b.dataset.school; renderCalendarPage(); }));
+    document.querySelectorAll("#cal-class-tabs .sub-tab").forEach((b) =>
+        b.addEventListener("click", () => { state.calClass = b.dataset.class; renderCalendarPage(); }));
+
+    $("#cal-prev").addEventListener("click", () => { state.calMonthIndex--; renderCalendarPage(); });
+    $("#cal-next").addEventListener("click", () => { state.calMonthIndex++; renderCalendarPage(); });
+
+    content.querySelectorAll(".cal-day[data-date]").forEach((btn) =>
+        btn.addEventListener("click", async () => {
+            const dateStr = btn.dataset.date;
+            const existing = state.calendar.find((r) =>
+                r.school === state.calSchool && r.class_number === state.calClass && r.date === dateStr);
+
+            if (existing) {
+                const { error } = await sb.from("class_calendar").delete().eq("id", existing.id);
+                if (error) return toast("Ошибка: " + error.message, true);
+                state.calendar = state.calendar.filter((r) => r.id !== existing.id);
+            } else {
+                const { data, error } = await sb.from("class_calendar")
+                    .insert({ school: state.calSchool, class_number: state.calClass, date: dateStr })
+                    .select();
+                if (error) return toast("Ошибка: " + error.message, true);
+                state.calendar.push(data[0]);
+            }
+            renderCalendarPage();
         }));
 }
 
