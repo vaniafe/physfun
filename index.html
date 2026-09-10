@@ -1,0 +1,65 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>physfun.ru — Проверка домашних заданий по физике</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>⚛️</text></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="styles.css">
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body>
+
+    <!-- ===================== ЭКРАН ВХОДА ===================== -->
+    <div id="login-screen" class="login-screen hidden">
+        <div class="login-card">
+            <div class="login-logo">⚛️</div>
+            <h1>Вход</h1>
+            <p class="login-sub">Панель учителя физики</p>
+            <form id="login-form">
+                <label>Email</label>
+                <input type="email" id="login-email" placeholder="teacher@physfun.ru" required autocomplete="username">
+                <label>Пароль</label>
+                <input type="password" id="login-password" placeholder="••••••••" required autocomplete="current-password">
+                <button type="submit" class="btn btn-primary btn-block">Войти</button>
+            </form>
+            <div id="login-error" class="error-msg hidden"></div>
+        </div>
+    </div>
+
+    <!-- ===================== ПРИЛОЖЕНИЕ ===================== -->
+    <div id="app" class="app hidden">
+        <header class="topbar">
+            <div class="topbar-brand">
+                <span class="brand-logo">⚛️</span>
+                <div>
+                    <div class="brand-title">physfun.ru</div>
+                    <div class="brand-sub">Проверка домашних заданий</div>
+                </div>
+            </div>
+            <div class="topbar-user">
+                <span id="user-email" class="user-email"></span>
+                <button id="logout-btn" class="btn btn-ghost">🚪 Выйти</button>
+            </div>
+        </header>
+
+        <nav class="tabs" id="main-tabs">
+            <button class="tab active" data-tab="students">👨‍🎓 Ученики</button>
+            <button class="tab" data-tab="homeworks">📋 Задания</button>
+            <button class="tab" data-tab="stats">📊 Статистика</button>
+        </nav>
+
+        <main id="content" class="content">
+            <div class="loading">Загрузка…</div>
+        </main>
+    </div>
+
+    <div id="toast" class="toast hidden"></div>
+
+    <script src="config.js"></script>
+    <script src="app.js"></script>
+</body>
+</html>
