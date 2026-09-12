@@ -146,7 +146,6 @@ html, body {
     gap: 8px;
     padding: 16px 28px 0;
     background: transparent;
-    flex-wrap: wrap;
 }
 
 .tab {
@@ -281,13 +280,12 @@ html, body {
     border-radius: 12px;
     padding: 12px 18px;
     box-shadow: var(--shadow);
-    margin-bottom: 12px;
+    margin-bottom: 20px;
     display: flex;
     align-items: center;
     gap: 10px;
     font-size: 14px;
     font-weight: 600;
-    cursor: pointer;
 }
 
 .flag-row input[type="checkbox"] { width: 18px; height: 18px; accent-color: var(--primary); cursor: pointer; }
@@ -526,7 +524,7 @@ tr:last-child td { border-bottom: none; }
 }
 .cal-day:hover:not(:empty) { border-color: var(--primary); }
 .cal-day.marked {
-    background: #bfdbfe;
+    background: #bfdbfe;               /* светло-голубой фон */
     border-color: #93c5fd;
     color: #1e3a8a;
 }
@@ -562,3 +560,109 @@ tr:last-child td { border-bottom: none; }
     color: #b91c1c;
 }
 .btn-delete:hover { background: #fecaca; border-color: #f87171; }
+
+/* ===================== ВХОД: ВЫБОР РОЛИ ===================== */
+.role-tabs {
+    display: flex;
+    gap: 8px;
+    margin: 18px 0 6px;
+}
+.role-tab {
+    flex: 1;
+    border: 1px solid var(--border);
+    background: #f3f4f6;
+    border-radius: 10px;
+    padding: 10px;
+    font-size: 14px;
+    font-weight: 700;
+    font-family: inherit;
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all .15s;
+}
+.role-tab.active { background: var(--primary); border-color: var(--primary); color: #fff; }
+
+/* ===================== ЧАСТЬ УЧЕНИКА ===================== */
+.student-hero {
+    background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
+    border-radius: 20px;
+    padding: 24px;
+    color: #fff;
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    margin-bottom: 20px;
+    box-shadow: 0 8px 32px rgba(102,126,234,0.28);
+    flex-wrap: wrap;
+}
+.student-hero h1 { font-size: 23px; font-weight: 800; }
+.student-hero .profile-meta { font-size: 15px; opacity: 0.92; margin-top: 6px; }
+
+.btn-huge {
+    display: block;
+    width: 100%;
+    padding: 22px;
+    font-size: 19px;
+    font-weight: 800;
+    border-radius: 18px;
+    margin-bottom: 20px;
+    background: linear-gradient(135deg, var(--primary) 0%, var(--accent) 100%);
+    color: #fff;
+    border: none;
+    cursor: pointer;
+    box-shadow: 0 8px 24px rgba(102,126,234,0.35);
+    transition: transform .15s, box-shadow .15s;
+    font-family: inherit;
+}
+.btn-huge:hover { transform: translateY(-2px); box-shadow: 0 12px 32px rgba(102,126,234,0.45); }
+
+.submit-panel { max-width: 640px; }
+.date-choice-grid { display: flex; flex-direction: column; gap: 10px; margin: 14px 0; }
+.date-choice {
+    border: 2px solid var(--border);
+    background: #fff;
+    border-radius: 12px;
+    padding: 14px;
+    font-size: 16px;
+    font-weight: 700;
+    font-family: inherit;
+    cursor: pointer;
+    text-align: center;
+    transition: all .15s;
+}
+.date-choice:hover { border-color: var(--primary); color: var(--primary); }
+
+.file-drop {
+    border: 2px dashed var(--border);
+    border-radius: 14px;
+    padding: 26px;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 14px;
+    cursor: pointer;
+    transition: all .15s;
+    margin-top: 6px;
+}
+.file-drop:hover { border-color: var(--primary); color: var(--primary); }
+.file-drop input { display: none; }
+
+/* ===================== МАСТЕР РЕГИСТРАЦИИ ===================== */
+.reg-steps { margin-top: 6px; text-align: left; }
+.reg-step-title { font-size: 15px; font-weight: 700; margin-bottom: 4px; }
+.reg-step-sub { font-size: 13px; color: var(--text-muted); margin-bottom: 14px; }
+.reg-choices { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.reg-choice {
+    border: 2px solid var(--border);
+    background: #fff;
+    border-radius: 10px;
+    padding: 12px;
+    font-size: 14px;
+    font-weight: 600;
+    font-family: inherit;
+    cursor: pointer;
+    text-align: center;
+    transition: all .15s;
+}
+.reg-choice:hover { border-color: var(--primary); color: var(--primary); }
+.reg-nav { display: flex; gap: 10px; margin-top: 6px; }
+.reg-nav .btn { flex: 1; }
