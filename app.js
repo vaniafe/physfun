@@ -1,8 +1,7 @@
 /* ============================================================
-   physfun.ru — панель учителя (статический сайт для Vercel)
-   Работает с Supabase: ученики, задания, календарь, проверка
-   работ, статистика
-   Версия 2: календарь классов, удаление учеников, ОГЭ/ЕГЭ
+   physfun.ru — портал учителя и ученика (сайт для reg.ru/VPS)
+   База: Supabase (через мост api.physfun.ru)
+   Версия 3: часть ученика + регистрация на сайте
    ============================================================ */
 
 const cfg = window.PHYSFUN_CONFIG;
@@ -25,7 +24,7 @@ const MONTHS_RU = ["Январь", "Февраль", "Март", "Апрель",
 
 /* --- состояние --- */
 const state = {
-    user: null,
+    user: null,               // учитель (supabase auth)
     students: [],
     homeworks: [],
     submissions: [],
@@ -38,6 +37,20 @@ const state = {
     calClass: null,
     calMonthIndex: 0,
 };
+
+/* --- состояние ученика --- */
+let studentCreds = null;      // {login, password}
+let studentInfo = null;       // данные ученика из student_login
+let studentSubmissions = [];  // его работы
+
+function loadStudentCreds() {
+    try { studentCreds = JSON.parse(localStorage.getItem("physfun_student")); }
+    catch (e) { studentCreds = null; }
+}
+function saveStudentCreds() {
+    if (studentCreds) localStorage.setItem("physfun_student", JSON.stringify(studentCreds));
+    else localStorage.removeItem("physfun_student");
+}
 
 /* ---------- утилиты ---------- */
 const $ = (sel) => document.querySelector(sel);
@@ -60,7 +73,14 @@ function toast(msg, isError = false) {
     t.textContent = msg;
     t.className = "toast" + (isError ? " toast-error" : "");
     clearTimeout(t._timer);
-    t._timer = setTimeout(() => t.classList.add("hidden"), 2600);
+    t._timer = setTimeout(() => t.classList.add("hidden"), 3000);
+}
+
+function showError(msg) {
+    const err = $("#login-error");
+    if (!msg) { err.classList.add("hidden"); return; }
+    err.textContent = msg;
+    err.classList.remove("hidden");
 }
 
 function avatarHtml(url, large = false) {
@@ -94,11 +114,377 @@ function academicMonths() {
     return arr;
 }
 
-function calKey(school, cls, dateStr) {
-    return `${school}|${cls}|${dateStr}`;
+/* ============================================================
+   АВТОРИЗАЦИЯ: единая форма для учителя и ученика
+   ============================================================ */
+$("#login-form").addEventListener("submit", async (e) => {
+    e.preventDefault();
+    showError(null);
+    const login = $("#login-email").value.trim();
+    const password = $("#login-password").value;
+
+    /* 1) пробуем учителя (Supabase Auth, логин = email) */
+    const { data: tData, error: tErr } = await sb.auth.signInWithPassword({
+        email: login, password,
+    });
+    if (!tErr && tData && tData.user) return; // showApp сработает через onAuthStateChange
+
+    /* 2) пробуем ученика (таблица students) */
+    const sLogin = login.toLowerCase();
+    const { data, error } = await sb.rpc("student_login", { p_login: sLogin, p_password: password });
+    if (!error && data && data.length) {
+        studentCreds = { login: sLogin, password };
+        studentInfo = data[0];
+        saveStudentCreds();
+        showStudentApp();
+        return;
+    }
+    showError("Неверный логин или пароль");
+});
+
+$("#logout-btn").addEventListener("click", async () => { await sb.auth.signOut(); });
+$("#student-logout-btn").addEventListener("click", () => {
+    studentCreds = null; studentInfo = null;
+    saveStudentCreds();
+    location.reload();
+});
+
+/* ============================================================
+   МАСТЕР РЕГИСТРАЦИИ УЧЕНИКА
+   ============================================================ */
+const reg = { step: 0, login: "", password: "", school: "", classNumber: "", first: "", last: "", avatarFile: null };
+
+$("#to-register-btn").addEventListener("click", () => {
+    Object.assign(reg, { step: 0, login: "", password: "", school: "", classNumber: "", first: "", last: "", avatarFile: null });
+    $("#login-form").classList.add("hidden");
+    renderRegStep();
+});
+
+function regBack() {
+    if (reg.step === 0) {
+        $("#reg-wizard").classList.add("hidden");
+        $("#login-form").classList.remove("hidden");
+        showError(null);
+        return;
+    }
+    reg.step--;
+    renderRegStep();
 }
 
-/* ---------- загрузка данных ---------- */
+function renderRegStep() {
+    const w = $("#reg-wizard");
+    w.classList.remove("hidden");
+    showError(null);
+    const schools = Object.keys(SCHOOLS_CONFIG);
+
+    if (reg.step === 0) {
+        w.innerHTML = `
+            <div class="reg-steps">
+                <div class="reg-step-title">Шаг 1/5: Придумайте логин и пароль</div>
+                <div class="reg-step-sub">Логин — латиницей, можно цифры и подчёркивание</div>
+                <label style="display:block;text-align:left;font-size:13px;font-weight:600;color:var(--text-muted);margin:10px 0 6px;">Логин</label>
+                <input type="text" id="reg-login" placeholder="ivanov_i" style="width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:10px;font-size:15px;" autocomplete="off">
+                <label style="display:block;text-align:left;font-size:13px;font-weight:600;color:var(--text-muted);margin:14px 0 6px;">Пароль</label>
+                <input type="password" id="reg-pass1" style="width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:10px;font-size:15px;">
+                <label style="display:block;text-align:left;font-size:13px;font-weight:600;color:var(--text-muted);margin:14px 0 6px;">Повторите пароль</label>
+                <input type="password" id="reg-pass2" style="width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:10px;font-size:15px;">
+                <div class="reg-nav">
+                    <button class="btn" id="reg-back">⬅️ Назад</button>
+                    <button class="btn btn-primary" id="reg-next">Далее ➡️</button>
+                </div>
+            </div>`;
+        $("#reg-back").addEventListener("click", regBack);
+        $("#reg-next").addEventListener("click", () => {
+            const login = ($("#reg-login").value || "").trim().toLowerCase();
+            const p1 = $("#reg-pass1").value || "";
+            const p2 = $("#reg-pass2").value || "";
+            if (!/^[a-z0-9_]{3,32}$/.test(login)) return showError("Логин: 3–32 символа, латиница, цифры, подчёркивание");
+            if (p1.length < 4) return showError("Пароль должен быть не короче 4 символов");
+            if (p1 !== p2) return showError("Пароли не совпадают");
+            reg.login = login; reg.password = p1;
+            reg.step = 1; renderRegStep();
+        });
+    } else if (reg.step === 1) {
+        w.innerHTML = `
+            <div class="reg-steps">
+                <div class="reg-step-title">Шаг 2/5: Выберите школу</div>
+                <div class="reg-choices">
+                    ${schools.map((s) => `<button class="reg-choice" data-v="${esc(s)}">${esc(s)}</button>`).join("")}
+                </div>
+                <div class="reg-nav"><button class="btn" id="reg-back">⬅️ Назад</button></div>
+            </div>`;
+        $("#reg-back").addEventListener("click", regBack);
+        w.querySelectorAll(".reg-choice").forEach((b) => b.addEventListener("click", () => {
+            reg.school = b.dataset.v; reg.step = 2; renderRegStep();
+        }));
+    } else if (reg.step === 2) {
+        w.innerHTML = `
+            <div class="reg-steps">
+                <div class="reg-step-title">Шаг 3/5: Выберите класс</div>
+                <div class="reg-step-sub">${esc(reg.school)}</div>
+                <div class="reg-choices">
+                    ${SCHOOLS_CONFIG[reg.school].map((c) => `<button class="reg-choice" data-v="${esc(c)}">${esc(c)} класс</button>`).join("")}
+                </div>
+                <div class="reg-nav"><button class="btn" id="reg-back">⬅️ Назад</button></div>
+            </div>`;
+        $("#reg-back").addEventListener("click", regBack);
+        w.querySelectorAll(".reg-choice").forEach((b) => b.addEventListener("click", () => {
+            reg.classNumber = b.dataset.v; reg.step = 3; renderRegStep();
+        }));
+    } else if (reg.step === 3) {
+        w.innerHTML = `
+            <div class="reg-steps">
+                <div class="reg-step-title">Шаг 4/5: Имя и фамилия</div>
+                <div class="reg-step-sub">${esc(reg.school)}, ${esc(reg.classNumber)} класс</div>
+                <label style="display:block;text-align:left;font-size:13px;font-weight:600;color:var(--text-muted);margin:10px 0 6px;">Имя</label>
+                <input type="text" id="reg-first" style="width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:10px;font-size:15px;">
+                <label style="display:block;text-align:left;font-size:13px;font-weight:600;color:var(--text-muted);margin:14px 0 6px;">Фамилия</label>
+                <input type="text" id="reg-last" style="width:100%;padding:12px 14px;border:1px solid var(--border);border-radius:10px;font-size:15px;">
+                <div class="reg-nav">
+                    <button class="btn" id="reg-back">⬅️ Назад</button>
+                    <button class="btn btn-primary" id="reg-next">Далее ➡️</button>
+                </div>
+            </div>`;
+        $("#reg-back").addEventListener("click", regBack);
+        $("#reg-next").addEventListener("click", () => {
+            const f = ($("#reg-first").value || "").trim();
+            const l = ($("#reg-last").value || "").trim();
+            if (f.length < 2 || l.length < 2) return showError("Введите имя и фамилию (от 2 символов)");
+            reg.first = f; reg.last = l;
+            reg.step = 4; renderRegStep();
+        });
+    } else if (reg.step === 4) {
+        w.innerHTML = `
+            <div class="reg-steps">
+                <div class="reg-step-title">Шаг 5/5: Фото профиля</div>
+                <div class="reg-step-sub">${esc(reg.last)} ${esc(reg.first)}, ${esc(reg.classNumber)} класс<br>Загрузите фотографию вашего лица — так учитель вас узнает</div>
+                <label class="file-drop" id="reg-avatar-drop">
+                    📎 <span id="reg-avatar-label">Нажмите, чтобы выбрать фото</span>
+                    <input type="file" id="reg-avatar" accept="image/*">
+                </label>
+                <div class="reg-nav">
+                    <button class="btn" id="reg-back">⬅️ Назад</button>
+                    <button class="btn btn-primary" id="reg-finish">✅ Зарегистрироваться</button>
+                </div>
+            </div>`;
+        $("#reg-back").addEventListener("click", regBack);
+        const fileInput = $("#reg-avatar");
+        fileInput.addEventListener("change", () => {
+            reg.avatarFile = fileInput.files[0] || null;
+            $("#reg-avatar-label").textContent = reg.avatarFile ? "📷 " + reg.avatarFile.name : "Нажмите, чтобы выбрать фото";
+        });
+        $("#reg-finish").addEventListener("click", async () => {
+            if (!reg.avatarFile) return showError("Выберите фотографию для аватарки");
+            const btn = $("#reg-finish");
+            btn.disabled = true; btn.textContent = "⏳ Регистрация…";
+            showError(null);
+            try {
+                const path = `web_${reg.login}_${Date.now()}.jpg`;
+                const { error: upErr } = await sb.storage.from("avatars").upload(path, reg.avatarFile, { contentType: reg.avatarFile.type || "image/jpeg" });
+                if (upErr) throw new Error(upErr.message);
+                const avatarUrl = sb.storage.from("avatars").getPublicUrl(path).data.publicUrl;
+                const { data, error } = await sb.rpc("register_student", {
+                    p_login: reg.login, p_password: reg.password,
+                    p_first: reg.first, p_last: reg.last,
+                    p_class: reg.classNumber, p_school: reg.school,
+                    p_avatar_url: avatarUrl,
+                });
+                if (error) throw new Error(error.message);
+                if (data && data.error) { showError(data.error); btn.disabled = false; btn.textContent = "✅ Зарегистрироваться"; return; }
+                studentCreds = { login: reg.login, password: reg.password };
+                saveStudentCreds();
+                const { data: me } = await sb.rpc("student_login", { p_login: reg.login, p_password: reg.password });
+                studentInfo = me[0];
+                toast("Регистрация завершена!");
+                showStudentApp();
+            } catch (e) {
+                showError("Ошибка: " + e.message);
+                btn.disabled = false; btn.textContent = "✅ Зарегистрироваться";
+            }
+        });
+    }
+}
+
+/* ============================================================
+   ЧАСТЬ УЧЕНИКА
+   ============================================================ */
+async function showStudentApp() {
+    $("#login-screen").classList.add("hidden");
+    $("#app").classList.add("hidden");
+    $("#student-app").classList.remove("hidden");
+    await loadStudentData();
+    renderStudentPage();
+}
+
+async function loadStudentData() {
+    $("#student-content").innerHTML = `<div class="loading">Загрузка…</div>`;
+    const [subs, dates] = await Promise.all([
+        sb.rpc("get_my_submissions", { p_login: studentCreds.login, p_password: studentCreds.password }),
+        sb.rpc("get_class_dates", { p_school: studentInfo.school, p_class: studentInfo.class_number }),
+    ]);
+    if (subs.error || dates.error) {
+        $("#student-content").innerHTML = `<div class="error-msg" style="margin:30px 0">Ошибка загрузки данных.<br>${esc(subs.error?.message || dates.error?.message || "")}</div>`;
+        return;
+    }
+    studentSubmissions = subs.data || [];
+    studentClassDates = dates.data || [];
+}
+
+let studentClassDates = [];
+
+function renderStudentPage() {
+    const c = $("#student-content");
+    c.innerHTML = `
+        <div class="student-hero">
+            ${avatarHtml(studentInfo.avatar_url, true)}
+            <div>
+                <h1>${esc(studentInfo.first_name)} ${esc(studentInfo.last_name)}</h1>
+                <div class="profile-meta">🏫 ${esc(studentInfo.school)} &nbsp;|&nbsp; 📚 ${esc(studentInfo.class_number)} класс</div>
+            </div>
+        </div>
+
+        <button class="btn-huge" id="student-submit-btn">📸 Отправить домашнее задание</button>
+
+        <h2 class="page-title" style="font-size:19px">📝 Мои домашние задания</h2>
+        <div id="student-works"></div>
+    `;
+
+    $("#student-submit-btn").addEventListener("click", openSubmitPanel);
+    renderStudentWorks();
+}
+
+function renderStudentWorks() {
+    const wrap = $("#student-works");
+    if (!studentSubmissions.length) {
+        wrap.innerHTML = `<div class="empty-note">Вы ещё не отправляли домашние задания.<br>Нажмите кнопку «📸 Отправить домашнее задание» выше.</div>`;
+        return;
+    }
+    /* группировка по дате сдачи, новые сверху */
+    const groups = new Map();
+    studentSubmissions.forEach((sub) => {
+        const key = sub.due_date || (sub.submitted_at ? String(sub.submitted_at).slice(0, 10) : "Без даты");
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(sub);
+    });
+    const sorted = [...groups.entries()].sort((a, b) => {
+        if (a[0] === "Без даты") return 1;
+        if (b[0] === "Без даты") return -1;
+        return b[0].localeCompare(a[0]);
+    });
+
+    wrap.innerHTML = "";
+    sorted.forEach(([dateKey, items]) => {
+        const badge = STATUS_LABELS[items[0].status] || STATUS_LABELS.pending;
+        const block = document.createElement("div");
+        block.className = "work-block";
+        block.innerHTML = `
+            <div class="work-block-head">
+                <div class="work-date">📅 ${esc(fmtDate(dateKey))}${items[0].grade ? ` &nbsp;<span class="badge badge-graded">Оценка: ${items[0].grade}</span>` : ""}</div>
+                <span class="badge ${badge.cls}">${badge.text}</span>
+            </div>
+            <div class="photos-grid">
+                ${items.map((i) => `<img src="${esc(i.photo_url)}" alt="Работа" loading="lazy">`).join("")}
+            </div>`;
+        wrap.appendChild(block);
+    });
+
+    wrap.querySelectorAll(".photos-grid img").forEach((img) =>
+        img.addEventListener("click", () => {
+            const lb = document.createElement("div");
+            lb.className = "lightbox";
+            lb.innerHTML = `<img src="${img.src}">`;
+            lb.addEventListener("click", () => lb.remove());
+            document.body.appendChild(lb);
+        }));
+}
+
+/* ---------- сдача работы ---------- */
+function openSubmitPanel() {
+    const today = new Date();
+    const lo = new Date(today); lo.setDate(lo.getDate() - 1);
+    const hi = new Date(today); hi.setDate(hi.getDate() + 5);
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const allowed = (studentClassDates || []).filter((d) => d >= iso(lo) && d <= iso(hi));
+
+    const c = $("#student-content");
+    if (!allowed.length) {
+        c.innerHTML = `
+            <div class="back-row"><button class="btn" id="st-back">⬅️ Назад</button></div>
+            <div class="form-card submit-panel">
+                <h3>📸 Отправить домашнее задание</h3>
+                <div class="empty-note">Сейчас нет доступных дат для сдачи.<br>Даты открывает учитель в календаре на сайте.</div>
+            </div>`;
+        $("#st-back").addEventListener("click", renderStudentPage);
+        return;
+    }
+
+    c.innerHTML = `
+        <div class="back-row"><button class="btn" id="st-back">⬅️ Назад</button></div>
+        <div class="form-card submit-panel">
+            <h3>📸 Отправить домашнее задание</h3>
+            <div class="reg-step-sub">${esc(studentInfo.last_name)} ${esc(studentInfo.first_name)}, ${esc(studentInfo.class_number)} класс</div>
+            <div class="reg-step-title">Шаг 1: Выберите дату сдачи</div>
+            <div class="date-choice-grid" id="date-choices">
+                ${allowed.map((d) => `<button class="date-choice" data-date="${d}">📅 ${fmtDate(d)}</button>`).join("")}
+            </div>
+            <div id="upload-zone" class="hidden">
+                <div class="reg-step-title" style="margin-top:8px;">Шаг 2: Прикрепите одно или несколько фото</div>
+                <label class="file-drop" id="hw-drop">
+                    📎 <span id="hw-drop-label">Нажмите, чтобы выбрать фотографии</span>
+                    <input type="file" id="hw-files" accept="image/*" multiple>
+                </label>
+                <div id="hw-progress" style="font-size:14px;color:var(--text-muted);margin-top:10px;"></div>
+            </div>
+        </div>`;
+
+    $("#st-back").addEventListener("click", renderStudentPage);
+
+    let chosenDate = null;
+    $("#date-choices").querySelectorAll(".date-choice").forEach((b) =>
+        b.addEventListener("click", () => {
+            chosenDate = b.dataset.date;
+            $("#date-choices").querySelectorAll(".date-choice").forEach((x) => {
+                x.style.borderColor = x === b ? "var(--primary)" : "";
+                x.style.background = x === b ? "#eef2ff" : "";
+            });
+            $("#upload-zone").classList.remove("hidden");
+        }));
+
+    $("#hw-files").addEventListener("change", async (e) => {
+        const files = [...(e.target.files || [])];
+        if (!files.length || !chosenDate) return;
+        const progress = $("#hw-progress");
+        let done = 0;
+        for (const file of files) {
+            progress.textContent = `Загрузка ${done + 1} из ${files.length}…`;
+            try {
+                const path = `${studentInfo.id}_${Date.now()}_${done}.jpg`;
+                const { error: upErr } = await sb.storage.from("homework-photos")
+                    .upload(path, file, { contentType: file.type || "image/jpeg" });
+                if (upErr) throw new Error(upErr.message);
+                const url = sb.storage.from("homework-photos").getPublicUrl(path).data.publicUrl;
+                const { data, error } = await sb.rpc("submit_homework", {
+                    p_login: studentCreds.login, p_password: studentCreds.password,
+                    p_due_date: chosenDate, p_photo_url: url,
+                });
+                if (error) throw new Error(error.message);
+                if (data && data.error) throw new Error(data.error);
+                done++;
+            } catch (err) {
+                progress.textContent = `❌ Ошибка на фото ${done + 1}: ${err.message}`;
+                return;
+            }
+        }
+        progress.textContent = `✅ Сохранено фото: ${done}.`;
+        toast("Работа отправлена!");
+        await loadStudentData();
+        setTimeout(renderStudentPage, 800);
+    });
+}
+
+/* ============================================================
+   ЧАСТЬ УЧИТЕЛЯ (без изменений)
+   ============================================================ */
 async function loadData() {
     content.innerHTML = `<div class="loading">Загрузка…</div>`;
     const [st, hw, sub, cal] = await Promise.all([
@@ -110,8 +496,7 @@ async function loadData() {
     const err = st.error || hw.error || sub.error || cal.error;
     if (err) {
         content.innerHTML = `<div class="error-msg" style="margin:30px 0">Ошибка загрузки данных.
-            Проверьте config.js и что выполнены скрипты supabase_security.sql
-            и supabase_update_v2.sql.<br>${esc(err.message)}</div>`;
+            Проверьте config.js и что выполнены SQL-скрипты.<br>${esc(err.message)}</div>`;
         return;
     }
     state.students = st.data || [];
@@ -121,7 +506,6 @@ async function loadData() {
     render();
 }
 
-/* ---------- навигация ---------- */
 function setTab(tab) {
     state.tab = tab;
     state.selectedStudent = null;
@@ -135,28 +519,24 @@ function openStudent(id) {
     render();
 }
 
-/* ---------- отрисовка ---------- */
 function render() {
-    if (state.selectedStudent) return renderStudentPage(state.selectedStudent);
-
+    if (state.selectedStudent) return renderStudentPageT(state.selectedStudent);
     if (state.tab === "students") renderStudentsPage();
     else if (state.tab === "homeworks") renderHomeworksPage();
     else if (state.tab === "calendar") renderCalendarPage();
     else if (state.tab === "stats") renderStatsPage();
 }
 
-/* ===================== УЧЕНИКИ ===================== */
+/* ---------- ученики (учитель) ---------- */
 function renderStudentsPage() {
     const schools = Object.keys(SCHOOLS_CONFIG);
     if (!state.school || !SCHOOLS_CONFIG[state.school]) state.school = schools[0];
     if (!state.classNumber || !SCHOOLS_CONFIG[state.school].includes(state.classNumber)) {
         state.classNumber = SCHOOLS_CONFIG[state.school][0];
     }
-
     const classes = SCHOOLS_CONFIG[state.school];
     const list = state.students.filter(
-        (s) => s.school === state.school && s.class_number === state.classNumber
-    );
+        (s) => s.school === state.school && s.class_number === state.classNumber);
 
     content.innerHTML = `
         <h2 class="page-title">👨‍🎓 Ученики</h2>
@@ -167,8 +547,7 @@ function renderStudentsPage() {
             ${classes.map((c) => `<button class="sub-tab ${c === state.classNumber ? "active" : ""}" data-class="${esc(c)}">${esc(c)} класс</button>`).join("")}
         </div>
         <p class="count-note">👥 Всего: ${list.length} учеников</p>
-        <div class="students-grid" id="students-grid"></div>
-    `;
+        <div class="students-grid" id="students-grid"></div>`;
 
     document.querySelectorAll("#school-tabs .sub-tab").forEach((b) =>
         b.addEventListener("click", () => { state.school = b.dataset.school; renderStudentsPage(); }));
@@ -177,10 +556,9 @@ function renderStudentsPage() {
 
     const grid = $("#students-grid");
     if (!list.length) {
-        grid.innerHTML = `<div class="empty-note" style="grid-column:1/-1">В этом классе пока нет учеников.<br>Ученики появятся после регистрации в Telegram-боте.</div>`;
+        grid.innerHTML = `<div class="empty-note" style="grid-column:1/-1">В этом классе пока нет учеников.<br>Ученики регистрируются через бота или кнопку «Зарегистрироваться» на сайте.</div>`;
         return;
     }
-
     grid.innerHTML = list.map((s) => `
         <div class="student-card" data-id="${s.id}">
             ${s.exam_flag && examLabel(s.class_number) ? `<div class="exam-badge">${examLabel(s.class_number)}</div>` : ""}
@@ -188,14 +566,12 @@ function renderStudentsPage() {
             <div class="student-name">${esc(s.last_name)}<br>${esc(s.first_name)}</div>
             <div class="student-class">${esc(s.class_number)} класс</div>
             ${s.needs_avatar_update ? `<div class="card-photo-flag">📸 Требуется фото</div>` : ""}
-        </div>
-    `).join("");
-
+        </div>`).join("");
     grid.querySelectorAll(".student-card").forEach((card) =>
         card.addEventListener("click", () => openStudent(card.dataset.id)));
 }
 
-/* ===================== СТРАНИЦА УЧЕНИКА ===================== */
+/* ---------- страница ученика (учитель) ---------- */
 function homeworkById(id) {
     return state.homeworks.find((h) => h.id === id);
 }
@@ -216,21 +592,12 @@ function groupSubmissions(studentId) {
 
 async function deleteStudent(student) {
     const subs = state.submissions.filter((s) => s.student_id === student.id);
-
     const avatarPath = storagePath(student.avatar_url, "avatars");
-    if (avatarPath) {
-        try { await sb.storage.from("avatars").remove([avatarPath]); } catch (e) { }
-    }
-    const photoPaths = subs
-        .map((s) => storagePath(s.photo_url, "homework-photos"))
-        .filter(Boolean);
-    if (photoPaths.length) {
-        try { await sb.storage.from("homework-photos").remove(photoPaths); } catch (e) { }
-    }
-
+    if (avatarPath) { try { await sb.storage.from("avatars").remove([avatarPath]); } catch (e) {} }
+    const photoPaths = subs.map((s) => storagePath(s.photo_url, "homework-photos")).filter(Boolean);
+    if (photoPaths.length) { try { await sb.storage.from("homework-photos").remove(photoPaths); } catch (e) {} }
     const { error } = await sb.from("students").delete().eq("id", student.id);
     if (error) return toast("Ошибка удаления: " + error.message, true);
-
     state.students = state.students.filter((s) => s.id !== student.id);
     state.submissions = state.submissions.filter((s) => s.student_id !== student.id);
     state.selectedStudent = null;
@@ -238,98 +605,70 @@ async function deleteStudent(student) {
     render();
 }
 
-function renderStudentPage(studentId) {
+function renderStudentPageT(studentId) {
     const st = state.students.find((s) => s.id === studentId);
     if (!st) { state.selectedStudent = null; return render(); }
-
     const subs = state.submissions.filter((s) => s.student_id === studentId);
     const groups = groupSubmissions(studentId);
     const exam = examLabel(st.class_number);
 
     content.innerHTML = `
         <div class="back-row"><button class="btn" id="back-btn">← Назад к списку</button></div>
-
         <div class="profile-header">
             ${avatarHtml(st.avatar_url, true)}
             <div>
                 <h1>${esc(st.last_name)} ${esc(st.first_name)}</h1>
                 <div class="profile-meta">🏫 ${esc(st.school)} &nbsp;|&nbsp; 📚 ${esc(st.class_number)} класс</div>
-                <div class="profile-count">Всего работ: ${subs.length}</div>
+                <div class="profile-count">Всего работ: ${subs.length}${st.login ? ` &nbsp;|&nbsp; 🔑 ${esc(st.login)}` : ""}</div>
             </div>
             <div class="profile-actions">
                 <button class="btn btn-delete" id="delete-btn">🗑 Удалить ученика</button>
             </div>
         </div>
-
         <label class="flag-row">
             <input type="checkbox" id="photo-flag" ${st.needs_avatar_update ? "checked" : ""}>
             Сменить фото профиля
         </label>
-
         ${exam ? `
         <label class="flag-row">
             <input type="checkbox" id="exam-flag" ${st.exam_flag ? "checked" : ""}>
             ${exam === "ОГЭ" ? "📘 ОГЭ" : "🎓 ЕГЭ"}
         </label>` : ""}
-
         <h2 class="page-title" style="font-size:19px">📸 Домашние задания</h2>
-        <div id="works"></div>
-    `;
+        <div id="works"></div>`;
 
     $("#back-btn").addEventListener("click", () => { state.selectedStudent = null; render(); });
-
     $("#delete-btn").addEventListener("click", async () => {
-        const ok = confirm(
-            `Удалить ученика ${st.last_name} ${st.first_name}?\n\n` +
-            `Будут удалены: профиль, аватарка и ${subs.length} отправленных работ.\n` +
-            `Действие необратимо!`
-        );
+        const ok = confirm(`Удалить ученика ${st.last_name} ${st.first_name}?\n\nБудут удалены: профиль, аватарка и ${subs.length} работ.\nДействие необратимо!`);
         if (!ok) return;
         $("#delete-btn").disabled = true;
         $("#delete-btn").textContent = "⏳ Удаление…";
         await deleteStudent(st);
     });
-
     $("#photo-flag").addEventListener("change", async (e) => {
-        const { error } = await sb.from("students")
-            .update({ needs_avatar_update: e.target.checked })
-            .eq("id", studentId);
+        const { error } = await sb.from("students").update({ needs_avatar_update: e.target.checked }).eq("id", studentId);
         if (error) { toast("Ошибка сохранения", true); e.target.checked = !e.target.checked; }
-        else {
-            st.needs_avatar_update = e.target.checked;
-            toast(e.target.checked ? "Требование смены фото установлено" : "Требование снято");
-        }
+        else { st.needs_avatar_update = e.target.checked; toast("Сохранено"); }
     });
-
     const examBox = $("#exam-flag");
-    if (examBox) {
-        examBox.addEventListener("change", async (e) => {
-            const { error } = await sb.from("students")
-                .update({ exam_flag: e.target.checked })
-                .eq("id", studentId);
-            if (error) { toast("Ошибка сохранения", true); e.target.checked = !e.target.checked; }
-            else {
-                st.exam_flag = e.target.checked;
-                toast(e.target.checked ? `${exam} отмечено` : `${exam} снято`);
-            }
-        });
-    }
+    if (examBox) examBox.addEventListener("change", async (e) => {
+        const { error } = await sb.from("students").update({ exam_flag: e.target.checked }).eq("id", studentId);
+        if (error) { toast("Ошибка сохранения", true); e.target.checked = !e.target.checked; }
+        else { st.exam_flag = e.target.checked; toast("Сохранено"); }
+    });
 
     const works = $("#works");
     if (!groups.length) {
         works.innerHTML = `<div class="empty-note">Ученик пока не отправлял домашние задания.</div>`;
         return;
     }
-
     groups.forEach(([dateKey, items]) => {
         const statuses = items.map((i) => i.status);
         const grades = items.map((i) => i.grade).filter((g) => g != null);
         const groupStatus = statuses.every((s) => s === statuses[0]) ? statuses[0] : "pending";
         const groupGrade = grades.length && grades.every((g) => g === grades[0]) ? grades[0] : null;
         const badge = STATUS_LABELS[groupStatus] || STATUS_LABELS.pending;
-
         const hw = homeworkById(items[0].homework_id);
-
         const block = document.createElement("div");
         block.className = "work-block";
         block.innerHTML = `
@@ -356,30 +695,21 @@ function renderStudentPage(studentId) {
                     </select>
                 </div>
                 <button class="btn btn-primary btn-save">💾 Сохранить</button>
-            </div>
-        `;
-
+            </div>`;
         block.querySelector(".btn-save").addEventListener("click", async () => {
             const checked = block.querySelector(".chk-checked").checked;
             const gradeVal = block.querySelector(".sel-grade").value;
             const grade = gradeVal === "" ? null : parseInt(gradeVal, 10);
             const status = checked ? (grade ? "graded" : "checked") : "pending";
-
             const ids = items.map((i) => i.id);
-            const { error } = await sb.from("submissions")
-                .update({ status, grade })
-                .in("id", ids);
-
+            const { error } = await sb.from("submissions").update({ status, grade }).in("id", ids);
             if (error) return toast("Ошибка сохранения: " + error.message, true);
-
             items.forEach((i) => { i.status = status; i.grade = grade; });
             toast("Сохранено!");
-            renderStudentPage(studentId);
+            renderStudentPageT(studentId);
         });
-
         works.appendChild(block);
     });
-
     works.querySelectorAll(".photos-grid img").forEach((img) =>
         img.addEventListener("click", () => {
             const lb = document.createElement("div");
@@ -390,24 +720,20 @@ function renderStudentPage(studentId) {
         }));
 }
 
-/* ===================== КАЛЕНДАРЬ ===================== */
+/* ---------- календарь (учитель) ---------- */
 function renderCalendarPage() {
     const schools = Object.keys(SCHOOLS_CONFIG);
     if (!state.calSchool || !SCHOOLS_CONFIG[state.calSchool]) state.calSchool = schools[0];
     if (!state.calClass || !SCHOOLS_CONFIG[state.calSchool].includes(state.calClass)) {
         state.calClass = SCHOOLS_CONFIG[state.calSchool][0];
     }
-
     const months = academicMonths();
     if (state.calMonthIndex < 0) state.calMonthIndex = 0;
     if (state.calMonthIndex > months.length - 1) state.calMonthIndex = months.length - 1;
     const { year, month } = months[state.calMonthIndex];
 
     const marked = new Set(
-        state.calendar
-            .filter((r) => r.school === state.calSchool && r.class_number === state.calClass)
-            .map((r) => r.date)
-    );
+        state.calendar.filter((r) => r.school === state.calSchool && r.class_number === state.calClass).map((r) => r.date));
 
     const daysInMonth = new Date(year, month + 1, 0).getDate();
     const firstOffset = (new Date(year, month, 1).getDay() + 6) % 7;
@@ -431,7 +757,6 @@ function renderCalendarPage() {
         <div class="sub-tabs" id="cal-class-tabs">
             ${SCHOOLS_CONFIG[state.calSchool].map((c) => `<button class="sub-tab ${c === state.calClass ? "active" : ""}" data-class="${esc(c)}">${esc(c)} класс</button>`).join("")}
         </div>
-
         <div class="form-card calendar-card">
             <div class="cal-header">
                 <button class="cal-nav" id="cal-prev" ${state.calMonthIndex === 0 ? "disabled" : ""}>‹</button>
@@ -439,23 +764,19 @@ function renderCalendarPage() {
                 <button class="cal-nav" id="cal-next" ${state.calMonthIndex === months.length - 1 ? "disabled" : ""}>›</button>
             </div>
             <div class="cal-grid">
-                ${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((w, i) =>
-                    `<div class="cal-weekday ${i >= 5 ? "weekend" : ""}">${w}</div>`).join("")}
+                ${["Пн", "Вт", "Ср", "Чт", "Пт", "Сб", "Вс"].map((w, i) => `<div class="cal-weekday ${i >= 5 ? "weekend" : ""}">${w}</div>`).join("")}
                 ${cells}
             </div>
             <div class="cal-hint">
-                💡 Нажмите на число, чтобы отметить его как день сдачи домашнего задания
-                (ещё раз — снять отметку). Отмечено: <strong>${marked.size}</strong>.
-                Эти даты ученик выбирает в Telegram-боте при отправке работы.
+                💡 Нажмите на число, чтобы отметить его как день сдачи (ещё раз — снять). Отмечено: <strong>${marked.size}</strong>.
+                Эти даты ученики выбирают в боте и на сайте.
             </div>
-        </div>
-    `;
+        </div>`;
 
     document.querySelectorAll("#cal-school-tabs .sub-tab").forEach((b) =>
         b.addEventListener("click", () => { state.calSchool = b.dataset.school; renderCalendarPage(); }));
     document.querySelectorAll("#cal-class-tabs .sub-tab").forEach((b) =>
         b.addEventListener("click", () => { state.calClass = b.dataset.class; renderCalendarPage(); }));
-
     $("#cal-prev").addEventListener("click", () => { state.calMonthIndex--; renderCalendarPage(); });
     $("#cal-next").addEventListener("click", () => { state.calMonthIndex++; renderCalendarPage(); });
 
@@ -464,15 +785,13 @@ function renderCalendarPage() {
             const dateStr = btn.dataset.date;
             const existing = state.calendar.find((r) =>
                 r.school === state.calSchool && r.class_number === state.calClass && r.date === dateStr);
-
             if (existing) {
                 const { error } = await sb.from("class_calendar").delete().eq("id", existing.id);
                 if (error) return toast("Ошибка: " + error.message, true);
                 state.calendar = state.calendar.filter((r) => r.id !== existing.id);
             } else {
                 const { data, error } = await sb.from("class_calendar")
-                    .insert({ school: state.calSchool, class_number: state.calClass, date: dateStr })
-                    .select();
+                    .insert({ school: state.calSchool, class_number: state.calClass, date: dateStr }).select();
                 if (error) return toast("Ошибка: " + error.message, true);
                 state.calendar.push(data[0]);
             }
@@ -480,7 +799,7 @@ function renderCalendarPage() {
         }));
 }
 
-/* ===================== ЗАДАНИЯ ===================== */
+/* ---------- задания (учитель) ---------- */
 function renderHomeworksPage() {
     content.innerHTML = `
         <h2 class="page-title">📋 Домашние задания</h2>
@@ -501,9 +820,7 @@ function renderHomeworksPage() {
                     <button type="submit" class="btn btn-primary btn-block">Добавить</button>
                 </form>
             </div>
-        </div>
-    `;
-
+        </div>`;
     const tableWrap = $("#hw-table");
     if (!state.homeworks.length) {
         tableWrap.innerHTML = `<div class="empty-note">Пока нет заданий.<br>Добавьте первое справа →</div>`;
@@ -521,7 +838,6 @@ function renderHomeworksPage() {
                         </tr>`).join("")}
                 </tbody>
             </table>`;
-
         tableWrap.querySelectorAll("[data-del]").forEach((b) =>
             b.addEventListener("click", async () => {
                 if (!confirm("Удалить задание? Отправленные работы сохранятся.")) return;
@@ -532,48 +848,39 @@ function renderHomeworksPage() {
                 renderHomeworksPage();
             }));
     }
-
     $("#hw-form").addEventListener("submit", async (e) => {
         e.preventDefault();
         const title = $("#hw-title").value.trim();
         const ref = $("#hw-ref").value.trim();
         const date = $("#hw-date").value || null;
         if (!title) return toast("Введите название задания", true);
-
         const { data, error } = await sb.from("homeworks")
-            .insert({ title, textbook_reference: ref || null, due_date: date })
-            .select();
-
+            .insert({ title, textbook_reference: ref || null, due_date: date }).select();
         if (error) return toast("Ошибка: " + error.message, true);
-
         state.homeworks.unshift(data[0]);
         toast("Задание добавлено!");
         renderHomeworksPage();
     });
 }
 
-/* ===================== СТАТИСТИКА ===================== */
+/* ---------- статистика (учитель) ---------- */
 function renderStatsPage() {
     const classCounts = {};
     state.students.forEach((s) => { classCounts[s.class_number] = (classCounts[s.class_number] || 0) + 1; });
-
     const statusCounts = {};
     state.submissions.forEach((s) => { statusCounts[s.status] = (statusCounts[s.status] || 0) + 1; });
-
     const bar = (label, value, max) => `
         <div class="bar-row">
             <div class="bar-label">${esc(label)}</div>
             <div class="bar-track"><div class="bar-fill" style="width:${max ? Math.round((value / max) * 100) : 0}%"></div></div>
             <div class="bar-value">${value}</div>
         </div>`;
-
     const metrics = [
         ["👨‍🎓 Учеников", state.students.length],
         ["📋 Заданий", state.homeworks.length],
         ["📝 Работ", state.submissions.length],
         ["✅ Оценено", state.submissions.filter((s) => s.grade).length],
     ];
-
     content.innerHTML = `
         <h2 class="page-title">📊 Статистика</h2>
         <div class="stats-grid">
@@ -596,12 +903,14 @@ function renderStatsPage() {
                     ? Object.entries(statusCounts).map(([k, v]) => bar((STATUS_LABELS[k] || { text: k }).text, v, Math.max(...Object.values(statusCounts)))).join("")
                     : `<div class="empty-note">Нет данных</div>`}
             </div>
-        </div>
-    `;
+        </div>`;
 }
 
-/* ===================== АВТОРИЗАЦИЯ ===================== */
+/* ============================================================
+   СТАРТ
+   ============================================================ */
 async function initAuth() {
+    loadStudentCreds();
     const { data: { session } } = await sb.auth.getSession();
     state.user = session?.user || null;
     showApp();
@@ -613,35 +922,38 @@ async function initAuth() {
 }
 
 function showApp() {
-    const loggedIn = !!state.user;
-    $("#login-screen").classList.toggle("hidden", loggedIn);
-    $("#app").classList.toggle("hidden", !loggedIn);
-    if (loggedIn) {
+    if (state.user) {
+        $("#login-screen").classList.add("hidden");
+        $("#student-app").classList.add("hidden");
+        $("#app").classList.remove("hidden");
         $("#user-email").textContent = state.user.email || "";
         loadData();
+        return;
     }
+    if (studentCreds && studentCreds.login) {
+        /* автовход ученика, если данные сохранены */
+        sb.rpc("student_login", { p_login: studentCreds.login, p_password: studentCreds.password })
+            .then(({ data }) => {
+                if (data && data.length) {
+                    studentInfo = data[0];
+                    showStudentApp();
+                } else {
+                    studentCreds = null; saveStudentCreds();
+                    showLogin();
+                }
+            });
+        return;
+    }
+    showLogin();
 }
 
-$("#login-form").addEventListener("submit", async (e) => {
-    e.preventDefault();
-    const err = $("#login-error");
-    err.classList.add("hidden");
-    const { error } = await sb.auth.signInWithPassword({
-        email: $("#login-email").value.trim(),
-        password: $("#login-password").value,
-    });
-    if (error) {
-        err.textContent = "Ошибка входа: " + error.message;
-        err.classList.remove("hidden");
-    }
-});
-
-$("#logout-btn").addEventListener("click", async () => {
-    await sb.auth.signOut();
-});
+function showLogin() {
+    $("#app").classList.add("hidden");
+    $("#student-app").classList.add("hidden");
+    $("#login-screen").classList.remove("hidden");
+}
 
 document.querySelectorAll("#main-tabs .tab").forEach((b) =>
     b.addEventListener("click", () => setTab(b.dataset.tab)));
 
-/* ---------- старт ---------- */
 initAuth();
