@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>physfun.ru — Проверка домашних заданий по физике</title>
+    <title>physfun.ru — Домашние задания по физике</title>
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='0.9em' font-size='90'>⚛️</text></svg>">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,20 +17,26 @@
     <div id="login-screen" class="login-screen hidden">
         <div class="login-card">
             <div class="login-logo">⚛️</div>
-            <h1>Вход</h1>
-            <p class="login-sub">Панель учителя физики</p>
+            <h1>physfun.ru</h1>
+
+            <!-- Единая форма входа: учитель или ученик -->
             <form id="login-form">
-                <label>Email</label>
-                <input type="email" id="login-email" placeholder="teacher@physfun.ru" required autocomplete="username">
+                <label>Логин</label>
+                <input type="text" id="login-email" placeholder="ivanov_i или teacher@physfun.ru" required autocomplete="username">
                 <label>Пароль</label>
                 <input type="password" id="login-password" placeholder="••••••••" required autocomplete="current-password">
                 <button type="submit" class="btn btn-primary btn-block">Войти</button>
+                <button type="button" id="to-register-btn" class="btn btn-block">📝 Зарегистрироваться</button>
             </form>
+
+            <!-- Мастер регистрации (заполняется из app.js) -->
+            <div id="reg-wizard" class="hidden"></div>
+
             <div id="login-error" class="error-msg hidden"></div>
         </div>
     </div>
 
-    <!-- ===================== ПРИЛОЖЕНИЕ ===================== -->
+    <!-- ===================== ЧАСТЬ УЧИТЕЛЯ ===================== -->
     <div id="app" class="app hidden">
         <header class="topbar">
             <div class="topbar-brand">
@@ -54,6 +60,26 @@
         </nav>
 
         <main id="content" class="content">
+            <div class="loading">Загрузка…</div>
+        </main>
+    </div>
+
+    <!-- ===================== ЧАСТЬ УЧЕНИКА ===================== -->
+    <div id="student-app" class="app hidden">
+        <header class="topbar">
+            <div class="topbar-brand">
+                <span class="brand-logo">⚛️</span>
+                <div>
+                    <div class="brand-title">physfun.ru</div>
+                    <div class="brand-sub">Сдача домашних заданий</div>
+                </div>
+            </div>
+            <div class="topbar-user">
+                <button id="student-logout-btn" class="btn btn-ghost">🚪 Выйти</button>
+            </div>
+        </header>
+
+        <main id="student-content" class="content">
             <div class="loading">Загрузка…</div>
         </main>
     </div>
