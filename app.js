@@ -149,6 +149,24 @@ $("#student-logout-btn").addEventListener("click", () => {
     location.reload();
 });
 
+/* ---------- сжатие изображения перед загрузкой ---------- */
+async function prepareImage(file, maxDim = 1600, quality = 0.85) {
+    try {
+        if (!file.type || !file.type.startsWith("image/")) return file;
+        const bmp = await createImageBitmap(file);
+        let w = bmp.width, h = bmp.height;
+        if (Math.max(w, h) <= maxDim) { bmp.close(); return file; }
+        const scale = maxDim / Math.max(w, h);
+        w = Math.round(w * scale); h = Math.round(h * scale);
+        const canvas = document.createElement("canvas");
+        canvas.width = w; canvas.height = h;
+        canvas.getContext("2d").drawImage(bmp, 0, 0, w, h);
+        bmp.close();
+        const blob = await new Promise((res) => canvas.toBlob(res, "image/jpeg", quality));
+        return blob || file;
+    } catch (e) { return file; }
+}
+
 /* ============================================================
    МАСТЕР РЕГИСТРАЦИИ УЧЕНИКА
    ============================================================ */
@@ -280,8 +298,9 @@ function renderRegStep() {
             showError(null);
             try {
                 const path = `web_${reg.login}_${Date.now()}.jpg`;
-                const { error: upErr } = await sb.storage.from("avatars").upload(path, reg.avatarFile, { contentType: reg.avatarFile.type || "image/jpeg" });
-                if (upErr) throw new Error(upErr.message);
+                const img = await prepareImage(reg.avatarFile, 1200);
+                const { error: upErr } = await sb.storage.from("avatars").upload(path, img, { contentType: "image/jpeg" });
+                if (upErr) throw new Error("загрузка фото: " + upErr.message);
                 const avatarUrl = sb.storage.from("avatars").getPublicUrl(path).data.publicUrl;
                 const { data, error } = await sb.rpc("register_student", {
                     p_login: reg.login, p_password: reg.password,
@@ -289,7 +308,7 @@ function renderRegStep() {
                     p_class: reg.classNumber, p_school: reg.school,
                     p_avatar_url: avatarUrl,
                 });
-                if (error) throw new Error(error.message);
+                if (error) throw new Error("сохранение в базе: " + error.message);
                 if (data && data.error) { showError(data.error); btn.disabled = false; btn.textContent = "✅ Зарегистрироваться"; return; }
                 studentCreds = { login: reg.login, password: reg.password };
                 saveStudentCreds();
@@ -459,9 +478,10 @@ function openSubmitPanel() {
             progress.textContent = `Загрузка ${done + 1} из ${files.length}…`;
             try {
                 const path = `${studentInfo.id}_${Date.now()}_${done}.jpg`;
+                const img = await prepareImage(file, 2000);
                 const { error: upErr } = await sb.storage.from("homework-photos")
-                    .upload(path, file, { contentType: file.type || "image/jpeg" });
-                if (upErr) throw new Error(upErr.message);
+                    .upload(path, img, { contentType: "image/jpeg" });
+                if (upErr) throw new Error("загрузка фото: " + upErr.message);
                 const url = sb.storage.from("homework-photos").getPublicUrl(path).data.publicUrl;
                 const { data, error } = await sb.rpc("submit_homework", {
                     p_login: studentCreds.login, p_password: studentCreds.password,
