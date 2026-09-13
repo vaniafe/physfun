@@ -29,6 +29,7 @@ const state = {
     homeworks: [],
     submissions: [],
     calendar: [],
+    grades: [],
     tab: "students",
     school: null,
     classNumber: null,
@@ -507,11 +508,12 @@ function openSubmitPanel() {
    ============================================================ */
 async function loadData() {
     content.innerHTML = `<div class="loading">Загрузка…</div>`;
-    const [st, hw, sub, cal] = await Promise.all([
+    const [st, hw, sub, cal, gr] = await Promise.all([
         sb.from("students").select("*").order("last_name"),
         sb.from("homeworks").select("*").order("due_date", { ascending: false }),
         sb.from("submissions").select("*").order("submitted_at", { ascending: false }),
         sb.from("class_calendar").select("*"),
+        sb.from("grades").select("*"),
     ]);
     const err = st.error || hw.error || sub.error || cal.error;
     if (err) {
@@ -523,6 +525,8 @@ async function loadData() {
     state.homeworks = hw.data || [];
     state.submissions = sub.data || [];
     state.calendar = cal.data || [];
+    state.grades = gr.error ? [] : (gr.data || []);  /* таблица grades появится после SQL */
+    updateBanner();
     render();
 }
 
@@ -544,6 +548,7 @@ function render() {
     if (state.tab === "students") renderStudentsPage();
     else if (state.tab === "homeworks") renderHomeworksPage();
     else if (state.tab === "calendar") renderCalendarPage();
+    else if (state.tab === "grades") renderGradesPage();
     else if (state.tab === "stats") renderStatsPage();
 }
 
@@ -620,6 +625,7 @@ async function deleteStudent(student) {
     if (error) return toast("Ошибка удаления: " + error.message, true);
     state.students = state.students.filter((s) => s.id !== student.id);
     state.submissions = state.submissions.filter((s) => s.student_id !== student.id);
+    state.grades = state.grades.filter((g) => g.student_id !== student.id);
     state.selectedStudent = null;
     toast("Ученик удалён");
     render();
@@ -725,6 +731,22 @@ function renderStudentPageT(studentId) {
             const { error } = await sb.from("submissions").update({ status, grade }).in("id", ids);
             if (error) return toast("Ошибка сохранения: " + error.message, true);
             items.forEach((i) => { i.status = status; i.grade = grade; });
+            /* синхронизация с таблицей оценок (вкладка "Оценки") */
+            try {
+                if (/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
+                    if (grade) {
+                        await sb.from("grades").upsert(
+                            { student_id: studentId, date: dateKey, mark: String(grade) },
+                            { onConflict: "student_id,date" });
+                        const gi = state.grades.findIndex((g) => g.student_id === studentId && g.date === dateKey);
+                        if (gi >= 0) state.grades[gi].mark = String(grade);
+                        else state.grades.push({ student_id: studentId, date: dateKey, mark: String(grade), in_journal: false });
+                    } else {
+                        await sb.from("grades").delete().eq("student_id", studentId).eq("date", dateKey);
+                        state.grades = state.grades.filter((g) => !(g.student_id === studentId && g.date === dateKey));
+                    }
+                }
+            } catch (e) { /* таблицы grades ещё нет — не мешаем сохранению */ }
             toast("Сохранено!");
             renderStudentPageT(studentId);
         });
@@ -817,6 +839,169 @@ function renderCalendarPage() {
             }
             renderCalendarPage();
         }));
+}
+
+/* ---------- баннер "заполните календарь" ---------- */
+function updateBanner() {
+    const el = $("#teacher-banner");
+    if (!el) return;
+    const limit = new Date();
+    limit.setDate(limit.getDate() + 7);
+    const iso = (d) => d.toISOString().slice(0, 10);
+    const pairs = [];
+    Object.entries(SCHOOLS_CONFIG).forEach(([school, classes]) =>
+        classes.forEach((cls) => pairs.push({ school, cls })));
+    const need = pairs.some(({ school, cls }) => {
+        const dates = state.calendar
+            .filter((r) => r.school === school && r.class_number === cls)
+            .map((r) => r.date);
+        if (!dates.length) return true;                       /* календарь пуст */
+        return dates.reduce((a, b) => (b > a ? b : a)) < iso(limit);
+    });
+    el.classList.toggle("hidden", !need);
+}
+
+/* ---------- вкладка "Оценки" (учитель) ---------- */
+let gradeSel = null;     /* выбранная клетка {sid, date} */
+let journalMode = false; /* режим выбора "в журнал" */
+
+function gradeFor(sid, date) {
+    return state.grades.find((g) => g.student_id === sid && g.date === date);
+}
+
+function gradeEditorHtml() {
+    const st = state.students.find((s) => s.id === gradeSel.sid);
+    if (!st) return "";
+    const g = gradeFor(gradeSel.sid, gradeSel.date);
+    return `
+        <div class="control-field" style="flex:1;min-width:220px;">
+            <label>${esc(st.last_name)} ${esc(st.first_name)} · ${fmtDate(gradeSel.date)}${g ? ` · сейчас: <b>${esc(g.mark)}</b>${g.in_journal ? " (в журнале)" : ""}` : " · без оценки"}</label>
+        </div>
+        <div class="control-field">
+            <label>Оценка</label>
+            <div style="display:flex;gap:6px;flex-wrap:wrap;">
+                ${["5", "4", "3", "2", "1", "н"].map((m) => `<button class="btn btn-sm" data-mark="${m}">${m}</button>`).join("")}
+                <button class="btn btn-sm btn-danger" data-mark="" title="Удалить оценку">✖</button>
+            </div>
+        </div>`;
+}
+
+function renderGradesPage() {
+    const schools = Object.keys(SCHOOLS_CONFIG);
+    if (!state.school || !SCHOOLS_CONFIG[state.school]) state.school = schools[0];
+    if (!state.classNumber || !SCHOOLS_CONFIG[state.school].includes(state.classNumber)) {
+        state.classNumber = SCHOOLS_CONFIG[state.school][0];
+    }
+    const dates = state.calendar
+        .filter((r) => r.school === state.school && r.class_number === state.classNumber)
+        .map((r) => r.date).sort();
+    const list = state.students
+        .filter((s) => s.school === state.school && s.class_number === state.classNumber)
+        .sort((a, b) => a.last_name.localeCompare(b.last_name, "ru"));
+
+    let rows = "";
+    list.forEach((s) => {
+        let tds = `<td class="g-name g-link" data-open="${s.id}" title="Открыть работы ученика">${esc(s.last_name)} ${esc(s.first_name)}</td>`;
+        dates.forEach((d) => {
+            const g = gradeFor(s.id, d);
+            const subs = state.submissions.filter((x) => x.student_id === s.id && x.due_date === d);
+            let cls = "g-cell", txt = "";
+            if (g) { txt = esc(g.mark); cls += g.in_journal ? " g-green" : " g-blue"; }
+            else if (subs.length) cls += subs.some((x) => x.status !== "pending") ? " g-blue" : " g-gray";
+            else cls += " g-white";
+            const sel = (gradeSel && gradeSel.sid === s.id && gradeSel.date === d) ? " g-sel" : "";
+            tds += `<td class="${cls}${sel}" data-sid="${s.id}" data-date="${d}">${txt}</td>`;
+        });
+        rows += `<tr>${tds}</tr>`;
+    });
+
+    content.innerHTML = `
+        <h2 class="page-title">✔️ Оценки</h2>
+        <div class="sub-tabs" id="gr-school-tabs">
+            ${schools.map((sc) => `<button class="sub-tab ${sc === state.school ? "active" : ""}" data-school="${esc(sc)}">${esc(sc)}</button>`).join("")}
+        </div>
+        <div class="sub-tabs" id="gr-class-tabs">
+            ${SCHOOLS_CONFIG[state.school].map((c) => `<button class="sub-tab ${c === state.classNumber ? "active" : ""}" data-class="${esc(c)}">${esc(c)} класс</button>`).join("")}
+        </div>
+        ${!dates.length ? `
+        <div class="form-card">
+            <div class="empty-note">Для этого класса в календаре нет отмеченных дат.<br>Заполните календарь — здесь появится таблица.</div>
+        </div>` : `
+        <div class="grades-wrap">
+            <table class="grades-table">
+                <thead><tr>
+                    <th class="g-name">Обучающийся</th>
+                    ${dates.map((d) => `<th>${d.slice(8)}.${d.slice(5, 7)}</th>`).join("")}
+                </tr></thead>
+                <tbody>${rows || `<tr><td class="g-name" colspan="${dates.length + 1}">В классе нет учеников</td></tr>`}</tbody>
+            </table>
+        </div>
+        <div id="grade-editor" class="${gradeSel ? "work-controls" : "hidden"}"
+             style="background:var(--card);border-radius:12px;padding:14px;margin-top:14px;box-shadow:var(--shadow);">
+            ${gradeSel ? gradeEditorHtml() : ""}
+        </div>
+        <div style="margin-top:14px;display:flex;gap:14px;align-items:center;flex-wrap:wrap;">
+            <button class="btn ${journalMode ? "btn-primary" : ""}" id="journal-btn">${journalMode ? "✅ Готово" : "🖊 Выставить в журнал"}</button>
+            <span class="grades-hint">${journalMode
+                ? "Режим выбора: нажимайте на клетки с оценками — они станут зелёными (отметка «внесено в журнал»). Повторный клик снимает отметку."
+                : "Нажмите на клетку, чтобы выставить оценку или «н» за эту дату (даже если работа не прислана)."}</span>
+        </div>`}`;
+
+    document.querySelectorAll("#gr-school-tabs .sub-tab").forEach((b) =>
+        b.addEventListener("click", () => { state.school = b.dataset.school; gradeSel = null; renderGradesPage(); }));
+    document.querySelectorAll("#gr-class-tabs .sub-tab").forEach((b) =>
+        b.addEventListener("click", () => { state.classNumber = b.dataset.class; gradeSel = null; renderGradesPage(); }));
+
+    content.querySelectorAll("[data-open]").forEach((td) =>
+        td.addEventListener("click", () => openStudent(td.dataset.open)));
+
+    content.querySelectorAll("td.g-cell").forEach((td) =>
+        td.addEventListener("click", async () => {
+            const sid = td.dataset.sid, date = td.dataset.date;
+            if (journalMode) {
+                const g = gradeFor(sid, date);
+                if (!g) return toast("В этой клетке нет оценки", true);
+                const { error } = await sb.from("grades").update({ in_journal: !g.in_journal }).eq("id", g.id);
+                if (error) return toast("Ошибка: " + error.message, true);
+                g.in_journal = !g.in_journal;
+                renderGradesPage();
+                return;
+            }
+            gradeSel = { sid, date };
+            renderGradesPage();
+        }));
+
+    const editor = $("#grade-editor");
+    if (editor && gradeSel) {
+        editor.querySelectorAll("[data-mark]").forEach((b) =>
+            b.addEventListener("click", async () => {
+                const mark = b.dataset.mark;
+                if (!gradeSel) return;
+                if (mark === "") {
+                    const { error } = await sb.from("grades").delete()
+                        .eq("student_id", gradeSel.sid).eq("date", gradeSel.date);
+                    if (error) return toast("Ошибка: " + error.message, true);
+                    state.grades = state.grades.filter((g) => !(g.student_id === gradeSel.sid && g.date === gradeSel.date));
+                } else {
+                    const { error } = await sb.from("grades").upsert(
+                        { student_id: gradeSel.sid, date: gradeSel.date, mark },
+                        { onConflict: "student_id,date" });
+                    if (error) return toast("Ошибка: " + error.message, true);
+                    const g = gradeFor(gradeSel.sid, gradeSel.date);
+                    if (g) g.mark = mark;
+                    else state.grades.push({ student_id: gradeSel.sid, date: gradeSel.date, mark, in_journal: false });
+                }
+                toast("Сохранено");
+                renderGradesPage();
+            }));
+    }
+
+    const jbtn = $("#journal-btn");
+    if (jbtn) jbtn.addEventListener("click", () => {
+        journalMode = !journalMode;
+        gradeSel = null;
+        renderGradesPage();
+    });
 }
 
 /* ---------- задания (учитель) ---------- */
@@ -975,5 +1160,8 @@ function showLogin() {
 
 document.querySelectorAll("#main-tabs .tab").forEach((b) =>
     b.addEventListener("click", () => setTab(b.dataset.tab)));
+
+const bannerEl = $("#teacher-banner");
+if (bannerEl) bannerEl.addEventListener("click", () => setTab("calendar"));
 
 initAuth();
