@@ -91,6 +91,16 @@ function avatarHtml(url, large = false) {
         onerror="this.outerHTML='<div class=&quot;${fallback}&quot;>🧑‍🎓</div>'">`;
 }
 
+/* увеличенный просмотр: клик открывает, повторный клик закрывает */
+function openLightbox(src) {
+    if (!src) return;
+    const lb = document.createElement("div");
+    lb.className = "lightbox";
+    lb.innerHTML = `<img src="${esc(src)}" alt="">`;
+    lb.addEventListener("click", () => lb.remove());
+    document.body.appendChild(lb);
+}
+
 function examLabel(classNumber) {
     const c = String(classNumber || "");
     if (c.startsWith("9")) return "ОГЭ";
@@ -356,7 +366,7 @@ function renderStudentPage() {
     const c = $("#student-content");
     c.innerHTML = `
         <div class="student-hero">
-            ${avatarHtml(studentInfo.avatar_url, true)}
+            <span class="avatar-zoom" id="st-avatar-zoom" title="Нажмите, чтобы увеличить">${avatarHtml(studentInfo.avatar_url, true)}</span>
             <div>
                 <h1>${esc(studentInfo.first_name)} ${esc(studentInfo.last_name)}</h1>
                 <div class="profile-meta">🏫 ${esc(studentInfo.school)} &nbsp;|&nbsp; 📚 ${esc(studentInfo.class_number)} класс</div>
@@ -370,6 +380,8 @@ function renderStudentPage() {
     `;
 
     $("#student-submit-btn").addEventListener("click", openSubmitPanel);
+    const avz = $("#st-avatar-zoom");
+    if (avz) avz.addEventListener("click", () => openLightbox(studentInfo.avatar_url));
     renderStudentWorks();
 }
 
@@ -641,7 +653,7 @@ function renderStudentPageT(studentId) {
     content.innerHTML = `
         <div class="back-row"><button class="btn" id="back-btn">← Назад к списку</button></div>
         <div class="profile-header">
-            ${avatarHtml(st.avatar_url, true)}
+            <span class="avatar-zoom" id="t-avatar-zoom" title="Нажмите, чтобы увеличить">${avatarHtml(st.avatar_url, true)}</span>
             <div>
                 <h1>${esc(st.last_name)} ${esc(st.first_name)}</h1>
                 <div class="profile-meta">🏫 ${esc(st.school)} &nbsp;|&nbsp; 📚 ${esc(st.class_number)} класс</div>
@@ -664,6 +676,8 @@ function renderStudentPageT(studentId) {
         <div id="works"></div>`;
 
     $("#back-btn").addEventListener("click", () => { state.selectedStudent = null; render(); });
+    const avz = $("#t-avatar-zoom");
+    if (avz) avz.addEventListener("click", () => openLightbox(st.avatar_url));
     $("#delete-btn").addEventListener("click", async () => {
         const ok = confirm(`Удалить ученика ${st.last_name} ${st.first_name}?\n\nБудут удалены: профиль, аватарка и ${subs.length} работ.\nДействие необратимо!`);
         if (!ok) return;
