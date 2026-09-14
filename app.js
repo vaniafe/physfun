@@ -735,11 +735,15 @@ function renderStudentPageT(studentId) {
             try {
                 if (/^\d{4}-\d{2}-\d{2}$/.test(dateKey)) {
                     if (grade) {
-                        await sb.from("grades").upsert(
+                        const { data: gRows } = await sb.from("grades").upsert(
                             { student_id: studentId, date: dateKey, mark: String(grade) },
-                            { onConflict: "student_id,date" });
+                            { onConflict: "student_id,date" }).select();
+                        const row = (gRows && gRows[0]) || null;
                         const gi = state.grades.findIndex((g) => g.student_id === studentId && g.date === dateKey);
-                        if (gi >= 0) state.grades[gi].mark = String(grade);
+                        if (row) {
+                            if (gi >= 0) state.grades[gi] = row;
+                            else state.grades.push(row);
+                        } else if (gi >= 0) state.grades[gi].mark = String(grade);
                         else state.grades.push({ student_id: studentId, date: dateKey, mark: String(grade), in_journal: false });
                     } else {
                         await sb.from("grades").delete().eq("student_id", studentId).eq("date", dateKey);
@@ -961,7 +965,8 @@ function renderGradesPage() {
             if (journalMode) {
                 const g = gradeFor(sid, date);
                 if (!g) return toast("В этой клетке нет оценки", true);
-                const { error } = await sb.from("grades").update({ in_journal: !g.in_journal }).eq("id", g.id);
+                const { error } = await sb.from("grades").update({ in_journal: !g.in_journal })
+                    .eq("student_id", sid).eq("date", date);
                 if (error) return toast("Ошибка: " + error.message, true);
                 g.in_journal = !g.in_journal;
                 renderGradesPage();
@@ -983,12 +988,16 @@ function renderGradesPage() {
                     if (error) return toast("Ошибка: " + error.message, true);
                     state.grades = state.grades.filter((g) => !(g.student_id === gradeSel.sid && g.date === gradeSel.date));
                 } else {
-                    const { error } = await sb.from("grades").upsert(
+                    const { data: gRows, error } = await sb.from("grades").upsert(
                         { student_id: gradeSel.sid, date: gradeSel.date, mark },
-                        { onConflict: "student_id,date" });
+                        { onConflict: "student_id,date" }).select();
                     if (error) return toast("Ошибка: " + error.message, true);
-                    const g = gradeFor(gradeSel.sid, gradeSel.date);
-                    if (g) g.mark = mark;
+                    const row = (gRows && gRows[0]) || null;
+                    const gi2 = state.grades.findIndex((g) => g.student_id === gradeSel.sid && g.date === gradeSel.date);
+                    if (row) {
+                        if (gi2 >= 0) state.grades[gi2] = row;
+                        else state.grades.push(row);
+                    } else if (gi2 >= 0) state.grades[gi2].mark = mark;
                     else state.grades.push({ student_id: gradeSel.sid, date: gradeSel.date, mark, in_journal: false });
                 }
                 toast("Сохранено");
