@@ -724,3 +724,7 @@ tr:last-child td { border-bottom: none; }
 .g-green { background: rgba(34,197,94,0.40); }
 td.g-sel { outline: 3px solid var(--primary); outline-offset: -3px; }
 .grades-hint { font-size: 13px; color: var(--text-muted); max-width: 640px; }
+
+/* ===================== УВЕЛИЧЕНИЕ АВАТАРКИ ===================== */
+.avatar-zoom { cursor: zoom-in; display: inline-flex; border-radius: 50%; }
+.avatar-zoom:hover { filter: brightness(1.05); }
