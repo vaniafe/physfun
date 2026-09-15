@@ -719,6 +719,7 @@ function renderStudentPageT(studentId) {
             <input type="checkbox" id="exam-flag" ${st.exam_flag ? "checked" : ""}>
             ${exam === "ОГЭ" ? "📘 ОГЭ" : "🎓 ЕГЭ"}
         </label>` : ""}
+        <button class="btn" id="chat-btn-2" style="width:100%;padding:14px;font-size:15px;font-weight:700;margin-bottom:16px;">💬 Чат с учеником <span id="chat-badge-2" class="badge-unread ${state.unread[studentId] ? "" : "hidden"}">${state.unread[studentId] || ""}</span></button>
         <h2 class="page-title" style="font-size:19px">📸 Домашние задания</h2>
         <div id="works"></div>`;
 
@@ -726,6 +727,8 @@ function renderStudentPageT(studentId) {
     const avz = $("#t-avatar-zoom");
     if (avz) avz.addEventListener("click", () => openLightbox(st.avatar_url));
     $("#chat-btn").addEventListener("click", () => openChat(studentId, st.last_name + " " + st.first_name));
+    const chatBtn2 = $("#chat-btn-2");
+    if (chatBtn2) chatBtn2.addEventListener("click", () => openChat(studentId, st.last_name + " " + st.first_name));
     $("#delete-btn").addEventListener("click", async () => {
         const ok = confirm(`Удалить ученика ${st.last_name} ${st.first_name}?\n\nБудут удалены: профиль, аватарка и ${subs.length} работ.\nДействие необратимо!`);
         if (!ok) return;
@@ -1111,12 +1114,14 @@ function updateBadges() {
         el.classList.toggle("hidden", !n);
         el.textContent = n ? String(n) : "";
     });
-    const badge = $("#chat-badge");
-    if (badge) {
-        const n = state.unread[state.selectedStudent] || 0;
-        badge.textContent = n || "";
-        badge.classList.toggle("hidden", !n);
-    }
+    const n = state.unread[state.selectedStudent] || 0;
+    ["#chat-badge", "#chat-badge-2"].forEach((sel) => {
+        const b = $(sel);
+        if (b) {
+            b.textContent = n || "";
+            b.classList.toggle("hidden", !n);
+        }
+    });
 }
 
 /* ---------- окно чата ---------- */
