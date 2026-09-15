@@ -1129,9 +1129,12 @@ let chatTimer = null;
 function stopChat() {
     if (chatTimer) clearInterval(chatTimer);
     chatTimer = null;
+    const wasStudent = !!(chatCtx && chatCtx.isStudent);
     chatCtx = null;
     const el = $("#inline-chat");
     if (el) el.remove();
+    /* у ученика возвращаем плашку с последним сообщением на место */
+    if (wasStudent) renderLastTeacherMsg();
 }
 
 async function renderChatBody() {
@@ -1181,8 +1184,13 @@ async function renderChatBody() {
         }));
 }
 
-function buildInlineChat(afterElement, title, placeholder) {
-    stopChat();
+/* mode: "after" — вставить после кнопки; "replace" — вместо содержимого контейнера */
+function buildInlineChat(anchorEl, title, placeholder, mode) {
+    if (chatTimer) clearInterval(chatTimer);
+    chatTimer = null;
+    const old = $("#inline-chat");
+    if (old) old.remove();
+
     const div = document.createElement("div");
     div.id = "inline-chat";
     div.innerHTML = `
@@ -1197,13 +1205,18 @@ function buildInlineChat(afterElement, title, placeholder) {
                 <button class="btn btn-primary" id="chat-send">➤</button>
             </div>
         </div>`;
-    afterElement.after(div);
+    if (mode === "replace") {
+        anchorEl.innerHTML = "";
+        anchorEl.appendChild(div);
+    } else {
+        anchorEl.after(div);
+    }
     $("#chat-close").addEventListener("click", stopChat);
 
     const send = async () => {
         const input = $("#chat-input");
         const text = (input.value || "").trim();
-        if (!text) return;
+        if (!text || !chatCtx) return;
         input.value = "";
         if (chatCtx.isStudent) {
             const { data } = await sb.rpc("chat_send", { p_login: studentCreds.login, p_password: studentCreds.password, p_text: text });
@@ -1222,7 +1235,7 @@ function buildInlineChat(afterElement, title, placeholder) {
 function toggleTeacherChat(studentId, name) {
     if (chatCtx && !chatCtx.isStudent && chatCtx.studentId === studentId) { stopChat(); return; }
     chatCtx = { studentId, name, isStudent: false };
-    buildInlineChat($("#chat-btn-2"), name, "Сообщение ученику...");
+    buildInlineChat($("#chat-btn-2"), name, "Сообщение ученику...", "after");
     /* помечаем входящие прочитанными */
     sb.from("messages").update({ read_at: new Date().toISOString() })
         .eq("student_id", studentId).eq("sender", "student").is("read_at", null)
@@ -1231,11 +1244,11 @@ function toggleTeacherChat(studentId, name) {
     chatTimer = setInterval(renderChatBody, 5000);
 }
 
-/* ученик: кнопка "Написать учителю" открывает чат прямо под собой */
+/* ученик: чат открывается ВМЕСТО плашки с последним сообщением учителя */
 function openStudentChat() {
     if (chatCtx && chatCtx.isStudent && $("#inline-chat")) { stopChat(); return; }
     chatCtx = { isStudent: true, name: "Учитель" };
-    buildInlineChat($("#write-teacher-btn"), "Чат с учителем", "Напишите сообщение...");
+    buildInlineChat($("#last-teacher-msg"), "Чат с учителем", "Напишите сообщение...", "replace");
     renderChatBody();
     chatTimer = setInterval(renderChatBody, 5000);
 }
