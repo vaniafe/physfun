@@ -30,6 +30,8 @@ const state = {
     submissions: [],
     calendar: [],
     grades: [],
+    comments: [],
+    unread: {},
     tab: "students",
     school: null,
     classNumber: null,
@@ -348,9 +350,11 @@ async function showStudentApp() {
 
 async function loadStudentData() {
     $("#student-content").innerHTML = `<div class="loading">Загрузка…</div>`;
-    const [subs, dates] = await Promise.all([
+    const [subs, dates, msgs, comms] = await Promise.all([
         sb.rpc("get_my_submissions", { p_login: studentCreds.login, p_password: studentCreds.password }),
         sb.rpc("get_class_dates", { p_school: studentInfo.school, p_class: studentInfo.class_number }),
+        sb.rpc("chat_get", { p_login: studentCreds.login, p_password: studentCreds.password }),
+        sb.rpc("get_my_comments", { p_login: studentCreds.login, p_password: studentCreds.password }),
     ]);
     if (subs.error || dates.error) {
         $("#student-content").innerHTML = `<div class="error-msg" style="margin:30px 0">Ошибка загрузки данных.<br>${esc(subs.error?.message || dates.error?.message || "")}</div>`;
@@ -358,7 +362,13 @@ async function loadStudentData() {
     }
     studentSubmissions = subs.data || [];
     studentClassDates = dates.data || [];
+    studentMsgs = msgs.data || [];
+    studentComms = {};
+    (comms.data || []).forEach((c) => { studentComms[String(c.date)] = c; });
 }
+
+let studentMsgs = [];
+let studentComms = {};
 
 let studentClassDates = [];
 
@@ -373,6 +383,8 @@ function renderStudentPage() {
             </div>
         </div>
 
+        <div id="last-teacher-msg"></div>
+        <button class="btn" id="write-teacher-btn" style="width:100%;padding:14px;font-size:15px;font-weight:700;margin-bottom:20px;">✉️ Написать учителю</button>
         <button class="btn-huge" id="student-submit-btn">📸 Отправить домашнее задание</button>
 
         <h2 class="page-title" style="font-size:19px">📝 Мои домашние задания</h2>
@@ -382,6 +394,8 @@ function renderStudentPage() {
     $("#student-submit-btn").addEventListener("click", openSubmitPanel);
     const avz = $("#st-avatar-zoom");
     if (avz) avz.addEventListener("click", () => openLightbox(studentInfo.avatar_url));
+    $("#write-teacher-btn").addEventListener("click", openStudentChat);
+    renderLastTeacherMsg();
     renderStudentWorks();
 }
 
@@ -414,6 +428,7 @@ function renderStudentWorks() {
                 <div class="work-date">📅 ${esc(fmtDate(dateKey))}${items[0].grade ? ` &nbsp;<span class="badge badge-graded">Оценка: ${items[0].grade}</span>` : ""}</div>
                 <span class="badge ${badge.cls}">${badge.text}</span>
             </div>
+            ${studentComms[dateKey] ? `<div class="hw-comment"><b>💬 Комментарий учителя:</b> ${esc(studentComms[dateKey].text)}</div>` : ""}
             <div class="photos-grid">
                 ${items.map((i) => `<img src="${esc(i.photo_url)}" alt="Работа" loading="lazy">`).join("")}
             </div>`;
@@ -520,12 +535,13 @@ function openSubmitPanel() {
    ============================================================ */
 async function loadData() {
     content.innerHTML = `<div class="loading">Загрузка…</div>`;
-    const [st, hw, sub, cal, gr] = await Promise.all([
+    const [st, hw, sub, cal, gr, cm] = await Promise.all([
         sb.from("students").select("*").order("last_name"),
         sb.from("homeworks").select("*").order("due_date", { ascending: false }),
         sb.from("submissions").select("*").order("submitted_at", { ascending: false }),
         sb.from("class_calendar").select("*"),
         sb.from("grades").select("*"),
+        sb.from("hw_comments").select("*"),
     ]);
     const err = st.error || hw.error || sub.error || cal.error;
     if (err) {
@@ -537,8 +553,10 @@ async function loadData() {
     state.homeworks = hw.data || [];
     state.submissions = sub.data || [];
     state.calendar = cal.data || [];
-    state.grades = gr.error ? [] : (gr.data || []);  /* таблица grades появится после SQL */
+    state.grades = gr.error ? [] : (gr.data || []);      /* таблица grades появится после SQL */
+    state.comments = cm.error ? [] : (cm.data || []);    /* таблица hw_comments — после SQL */
     updateBanner();
+    refreshUnread();
     render();
 }
 
@@ -584,6 +602,12 @@ function renderStudentsPage() {
             ${classes.map((c) => `<button class="sub-tab ${c === state.classNumber ? "active" : ""}" data-class="${esc(c)}">${esc(c)} класс</button>`).join("")}
         </div>
         <p class="count-note">👥 Всего: ${list.length} учеников</p>
+        <button class="btn" id="class-msg-btn" style="margin-bottom:14px;">📨 Отправить сообщение классу</button>
+        <div id="class-msg-form" class="form-card hidden" style="max-width:560px;">
+            <h3>📨 Сообщение для ${esc(state.classNumber)} класса</h3>
+            <textarea id="class-msg-text" rows="3" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font-family:inherit;font-size:14px;" placeholder="Текст сообщения всем ученикам класса..."></textarea>
+            <button class="btn btn-primary" id="class-msg-send" style="margin-top:10px;">📨 Отправить</button>
+        </div>
         <div class="students-grid" id="students-grid"></div>`;
 
     document.querySelectorAll("#school-tabs .sub-tab").forEach((b) =>
@@ -598,6 +622,7 @@ function renderStudentsPage() {
     }
     grid.innerHTML = list.map((s) => `
         <div class="student-card" data-id="${s.id}">
+            <div class="unread-dot ${state.unread[s.id] ? "" : "hidden"}" data-uid="${s.id}">${state.unread[s.id] || ""}</div>
             ${s.exam_flag && examLabel(s.class_number) ? `<div class="exam-badge">${examLabel(s.class_number)}</div>` : ""}
             ${avatarHtml(s.avatar_url)}
             <div class="student-name">${esc(s.last_name)}<br>${esc(s.first_name)}</div>
@@ -606,6 +631,27 @@ function renderStudentsPage() {
         </div>`).join("");
     grid.querySelectorAll(".student-card").forEach((card) =>
         card.addEventListener("click", () => openStudent(card.dataset.id)));
+
+    const cmb = $("#class-msg-btn");
+    if (cmb) cmb.addEventListener("click", () => $("#class-msg-form").classList.toggle("hidden"));
+    const cms = $("#class-msg-send");
+    if (cms) cms.addEventListener("click", async () => {
+        const text = ($("#class-msg-text").value || "").trim();
+        if (!text) return toast("Введите текст сообщения", true);
+        cms.disabled = true;
+        let sent = 0;
+        for (const s of list) {
+            const { error } = await sb.from("messages").insert({
+                student_id: s.id, sender: "teacher",
+                text: "Сообщение всему классу: " + text,
+            });
+            if (!error) sent++;
+        }
+        cms.disabled = false;
+        $("#class-msg-text").value = "";
+        $("#class-msg-form").classList.add("hidden");
+        toast(`Отправлено ${sent} ученикам класса`);
+    });
 }
 
 /* ---------- страница ученика (учитель) ---------- */
@@ -660,6 +706,7 @@ function renderStudentPageT(studentId) {
                 <div class="profile-count">Всего работ: ${subs.length}${st.login ? ` &nbsp;|&nbsp; 🔑 ${esc(st.login)}` : ""}</div>
             </div>
             <div class="profile-actions">
+                <button class="btn" id="chat-btn">💬 Написать в чат <span id="chat-badge" class="badge-unread ${state.unread[studentId] ? "" : "hidden"}">${state.unread[studentId] || ""}</span></button>
                 <button class="btn btn-delete" id="delete-btn">🗑 Удалить ученика</button>
             </div>
         </div>
@@ -678,6 +725,7 @@ function renderStudentPageT(studentId) {
     $("#back-btn").addEventListener("click", () => { state.selectedStudent = null; render(); });
     const avz = $("#t-avatar-zoom");
     if (avz) avz.addEventListener("click", () => openLightbox(st.avatar_url));
+    $("#chat-btn").addEventListener("click", () => openChat(studentId, st.last_name + " " + st.first_name));
     $("#delete-btn").addEventListener("click", async () => {
         const ok = confirm(`Удалить ученика ${st.last_name} ${st.first_name}?\n\nБудут удалены: профиль, аватарка и ${subs.length} работ.\nДействие необратимо!`);
         if (!ok) return;
@@ -718,10 +766,12 @@ function renderStudentPageT(studentId) {
                     ${hw && hw.title ? `<div style="font-size:13px;color:var(--text-muted);margin-top:3px">${esc(hw.title)}${hw.textbook_reference ? " · " + esc(hw.textbook_reference) : ""}</div>` : ""}
                 </div>
                 <span class="badge ${badge.cls}">${badge.text}</span>
+                <button class="btn btn-sm" data-comment="${esc(dateKey)}">💬 ${state.comments.some((x) => x.student_id === studentId && String(x.date) === dateKey && !x.deleted) ? "Комментарий" : "Отправить комментарий"}</button>
             </div>
             <div class="photos-grid">
                 ${items.map((i) => `<img src="${esc(i.photo_url)}" alt="Работа" loading="lazy">`).join("")}
             </div>
+            ${commentHtmlT(studentId, dateKey)}
             <div class="work-controls">
                 <div class="control-field">
                     <label>Проверено</label>
@@ -771,13 +821,14 @@ function renderStudentPageT(studentId) {
         works.appendChild(block);
     });
     works.querySelectorAll(".photos-grid img").forEach((img) =>
-        img.addEventListener("click", () => {
-            const lb = document.createElement("div");
-            lb.className = "lightbox";
-            lb.innerHTML = `<img src="${img.src}">`;
-            lb.addEventListener("click", () => lb.remove());
-            document.body.appendChild(lb);
-        }));
+        img.addEventListener("click", () => openLightbox(img.src)));
+
+    works.querySelectorAll("[data-comment]").forEach((b) =>
+        b.addEventListener("click", () => openCommentModal(studentId, b.dataset.comment)));
+    works.querySelectorAll("[data-edit-comment]").forEach((b) =>
+        b.addEventListener("click", () => openCommentModal(studentId, b.dataset.editComment)));
+    works.querySelectorAll("[data-del-comment]").forEach((b) =>
+        b.addEventListener("click", () => deleteComment(studentId, b.dataset.delComment)));
 }
 
 /* ---------- календарь (учитель) ---------- */
@@ -1027,6 +1078,245 @@ function renderGradesPage() {
     });
 }
 
+/* ============================================================
+   ЧАТ учитель <-> ученик + комментарии к работам
+   ============================================================ */
+function fmtTime(d) {
+    return new Date(d).toLocaleString("ru-RU", { day: "2-digit", month: "2-digit", hour: "2-digit", minute: "2-digit" });
+}
+
+/* ---------- непрочитанные (для учителя) ---------- */
+let unreadTimerStarted = false;
+
+async function refreshUnread() {
+    try {
+        const { data } = await sb.from("messages").select("student_id")
+            .eq("sender", "student").is("read_at", null).eq("deleted", false);
+        const map = {};
+        (data || []).forEach((r) => { map[r.student_id] = (map[r.student_id] || 0) + 1; });
+        state.unread = map;
+        updateBadges();
+    } catch (e) { /* таблицы messages ещё нет */ }
+}
+
+function startUnreadTimer() {
+    if (unreadTimerStarted) return;
+    unreadTimerStarted = true;
+    setInterval(refreshUnread, 30000);
+}
+
+function updateBadges() {
+    document.querySelectorAll("[data-uid]").forEach((el) => {
+        const n = state.unread[el.dataset.uid] || 0;
+        el.classList.toggle("hidden", !n);
+        el.textContent = n ? String(n) : "";
+    });
+    const badge = $("#chat-badge");
+    if (badge) {
+        const n = state.unread[state.selectedStudent] || 0;
+        badge.textContent = n || "";
+        badge.classList.toggle("hidden", !n);
+    }
+}
+
+/* ---------- окно чата ---------- */
+let chatCtx = null;
+let chatTimer = null;
+
+function closeChat() {
+    if (chatTimer) clearInterval(chatTimer);
+    chatTimer = null;
+    const ov = $("#chat-overlay");
+    if (ov) ov.remove();
+}
+
+async function renderChatBody() {
+    const body = $("#chat-body");
+    if (!body || !chatCtx) return;
+    let rows = [];
+    if (chatCtx.isStudent) {
+        const { data } = await sb.rpc("chat_get", { p_login: studentCreds.login, p_password: studentCreds.password });
+        rows = data || [];
+        studentMsgs = rows;
+    } else {
+        const { data } = await sb.from("messages").select("*")
+            .eq("student_id", chatCtx.studentId).eq("deleted", false)
+            .order("created_at", { ascending: true });
+        rows = data || [];
+    }
+    /* ученику: свои сообщения можно удалить, пока учитель не ответил */
+    const canDel = rows.map((m) => {
+        if (chatCtx.isStudent && m.sender === "student") {
+            return !rows.some((r) => r.sender === "teacher" && new Date(r.created_at) > new Date(m.created_at));
+        }
+        return !chatCtx.isStudent; /* учитель может удалять любые */
+    });
+    body.innerHTML = rows.length ? rows.map((m, i) => `
+        <div class="bubble ${m.sender === "teacher" ? "them" : "me"}">
+            <div class="bubble-text">${esc(m.text)}</div>
+            <div class="bubble-meta">${fmtTime(m.created_at)}
+                ${canDel[i] ? `<button class="bubble-del" data-mid="${m.id}" title="Удалить">🗑</button>` : ""}
+            </div>
+        </div>`).join("")
+        : `<div class="empty-note" style="padding:30px 0;">Сообщений пока нет.<br>Напишите первым!</div>`;
+    body.scrollTop = body.scrollHeight;
+
+    body.querySelectorAll(".bubble-del").forEach((b) =>
+        b.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const mid = b.dataset.mid;
+            if (chatCtx.isStudent) {
+                const { data } = await sb.rpc("chat_delete", { p_login: studentCreds.login, p_password: studentCreds.password, p_id: mid });
+                if (data && data.error) return toast(data.error, true);
+            } else {
+                const { error } = await sb.from("messages").update({ deleted: true }).eq("id", mid);
+                if (error) return toast("Ошибка: " + error.message, true);
+            }
+            toast("Сообщение удалено");
+            renderChatBody();
+        }));
+}
+
+function buildChatOverlay(title, placeholder) {
+    closeChat();
+    const ov = document.createElement("div");
+    ov.id = "chat-overlay";
+    ov.innerHTML = `
+        <div class="chat-window">
+            <div class="chat-head">
+                <span>💬 ${esc(title)}</span>
+                <button class="chat-close" id="chat-close">✖</button>
+            </div>
+            <div class="chat-body" id="chat-body"></div>
+            <div class="chat-foot">
+                <input type="text" id="chat-input" placeholder="${esc(placeholder)}" maxlength="2000">
+                <button class="btn btn-primary" id="chat-send">➤</button>
+            </div>
+        </div>`;
+    document.body.appendChild(ov);
+    $("#chat-close").addEventListener("click", closeChat);
+    ov.addEventListener("click", (e) => { if (e.target === ov) closeChat(); });
+
+    const send = async () => {
+        const input = $("#chat-input");
+        const text = (input.value || "").trim();
+        if (!text) return;
+        input.value = "";
+        if (chatCtx.isStudent) {
+            const { data } = await sb.rpc("chat_send", { p_login: studentCreds.login, p_password: studentCreds.password, p_text: text });
+            if (data && data.error) return toast(data.error, true);
+        } else {
+            const { error } = await sb.from("messages").insert({ student_id: chatCtx.studentId, sender: "teacher", text });
+            if (error) return toast("Ошибка: " + error.message, true);
+        }
+        renderChatBody();
+    };
+    $("#chat-send").addEventListener("click", send);
+    $("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+}
+
+function openChat(studentId, name) {
+    chatCtx = { studentId, name, isStudent: false };
+    buildChatOverlay(name, "Сообщение ученику...");
+    /* помечаем прочитанным */
+    sb.from("messages").update({ read_at: new Date().toISOString() })
+        .eq("student_id", studentId).eq("sender", "student").is("read_at", null)
+        .then(() => refreshUnread());
+    renderChatBody();
+    chatTimer = setInterval(renderChatBody, 5000);
+}
+
+function openStudentChat() {
+    chatCtx = { isStudent: true, name: "Учитель" };
+    buildChatOverlay("Чат с учителем", "Напишите сообщение...");
+    renderChatBody();
+    chatTimer = setInterval(renderChatBody, 5000);
+}
+
+function renderLastTeacherMsg() {
+    const box = $("#last-teacher-msg");
+    if (!box) return;
+    const last = [...studentMsgs].reverse().find((m) => m.sender === "teacher");
+    if (!last) { box.innerHTML = ""; return; }
+    box.innerHTML = `
+        <div class="last-msg-box" id="last-msg-open" title="Открыть чат">
+            <div class="last-msg-label">👨‍🏫 Последнее сообщение учителя:</div>
+            <div class="last-msg-text">${esc(last.text)}</div>
+            <div class="last-msg-time">${fmtTime(last.created_at)}</div>
+        </div>`;
+    $("#last-msg-open").addEventListener("click", openStudentChat);
+}
+
+/* ---------- комментарии учителя к работам ---------- */
+function commentHtmlT(studentId, dateKey) {
+    const c = state.comments.find((x) => x.student_id === studentId && String(x.date) === dateKey && !x.deleted);
+    if (!c) return "";
+    return `<div class="hw-comment"><b>💬 Комментарий учителя:</b> ${esc(c.text)}
+        <span class="hw-comment-actions">
+            <button class="btn btn-sm" data-edit-comment="${esc(dateKey)}" title="Изменить">✏️</button>
+            <button class="btn btn-sm btn-danger" data-del-comment="${esc(dateKey)}" title="Удалить">🗑</button>
+        </span></div>`;
+}
+
+function openCommentModal(studentId, dateKey) {
+    const existing = state.comments.find((x) => x.student_id === studentId && String(x.date) === dateKey && !x.deleted);
+    const ov = document.createElement("div");
+    ov.className = "chat-overlay";
+    ov.id = "comment-overlay";
+    ov.innerHTML = `
+        <div class="chat-window">
+            <div class="chat-head"><span>💬 Комментарий к работе на ${esc(fmtDate(dateKey))}</span>
+                <button class="chat-close" id="comment-close">✖</button></div>
+            <div style="padding:16px;">
+                <textarea id="comment-text" rows="5" maxlength="1000"
+                    style="width:100%;padding:12px;border:1px solid var(--border);border-radius:10px;font-family:inherit;font-size:14px;"
+                    placeholder="Текст комментария для ученика...">${existing ? esc(existing.text) : ""}</textarea>
+                <button class="btn btn-primary btn-block" id="comment-save" style="margin-top:12px;">💾 Сохранить</button>
+            </div>
+        </div>`;
+    document.body.appendChild(ov);
+    const close = () => ov.remove();
+    $("#comment-close").addEventListener("click", close);
+    ov.addEventListener("click", (e) => { if (e.target === ov) close(); });
+    $("#comment-save").addEventListener("click", async () => {
+        const text = ($("#comment-text").value || "").trim();
+        if (!text) return toast("Введите текст комментария", true);
+        const wasDelivered = existing && existing.tg_message_id;
+        const payload = {
+            student_id: studentId, date: dateKey, text,
+            tg_state: wasDelivered ? "edit" : "send",
+            updated_at: new Date().toISOString(),
+        };
+        const { data, error } = await sb.from("hw_comments")
+            .upsert(payload, { onConflict: "student_id,date" }).select();
+        if (error) return toast("Ошибка: " + error.message, true);
+        const row = data && data[0];
+        const i = state.comments.findIndex((x) => x.student_id === studentId && String(x.date) === dateKey);
+        if (i >= 0) state.comments[i] = row; else state.comments.push(row);
+        close();
+        toast("Комментарий сохранён");
+        renderStudentPageT(studentId);
+    });
+}
+
+async function deleteComment(studentId, dateKey) {
+    if (!confirm("Удалить комментарий?")) return;
+    const c = state.comments.find((x) => x.student_id === studentId && String(x.date) === dateKey && !x.deleted);
+    if (!c) return;
+    if (c.tg_message_id) {
+        /* бот удалит сообщение в Telegram и сам зачистит строку */
+        const { error } = await sb.from("hw_comments").update({ deleted: true, tg_state: "delete" }).eq("id", c.id);
+        if (error) return toast("Ошибка: " + error.message, true);
+        c.deleted = true;
+    } else {
+        const { error } = await sb.from("hw_comments").delete().eq("id", c.id);
+        if (error) return toast("Ошибка: " + error.message, true);
+        state.comments = state.comments.filter((x) => x.id !== c.id);
+    }
+    toast("Комментарий удалён");
+    renderStudentPageT(studentId);
+}
+
 /* ---------- задания (учитель) ---------- */
 function renderHomeworksPage() {
     content.innerHTML = `
@@ -1155,6 +1445,7 @@ function showApp() {
         $("#student-app").classList.add("hidden");
         $("#app").classList.remove("hidden");
         $("#user-email").textContent = state.user.email || "";
+        startUnreadTimer();
         loadData();
         return;
     }
