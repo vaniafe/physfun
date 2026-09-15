@@ -706,7 +706,6 @@ function renderStudentPageT(studentId) {
                 <div class="profile-count">Всего работ: ${subs.length}${st.login ? ` &nbsp;|&nbsp; 🔑 ${esc(st.login)}` : ""}</div>
             </div>
             <div class="profile-actions">
-                <button class="btn" id="chat-btn">💬 Написать в чат <span id="chat-badge" class="badge-unread ${state.unread[studentId] ? "" : "hidden"}">${state.unread[studentId] || ""}</span></button>
                 <button class="btn btn-delete" id="delete-btn">🗑 Удалить ученика</button>
             </div>
         </div>
@@ -726,9 +725,8 @@ function renderStudentPageT(studentId) {
     $("#back-btn").addEventListener("click", () => { state.selectedStudent = null; render(); });
     const avz = $("#t-avatar-zoom");
     if (avz) avz.addEventListener("click", () => openLightbox(st.avatar_url));
-    $("#chat-btn").addEventListener("click", () => openChat(studentId, st.last_name + " " + st.first_name));
     const chatBtn2 = $("#chat-btn-2");
-    if (chatBtn2) chatBtn2.addEventListener("click", () => openChat(studentId, st.last_name + " " + st.first_name));
+    if (chatBtn2) chatBtn2.addEventListener("click", () => toggleTeacherChat(studentId, st.last_name + " " + st.first_name));
     $("#delete-btn").addEventListener("click", async () => {
         const ok = confirm(`Удалить ученика ${st.last_name} ${st.first_name}?\n\nБудут удалены: профиль, аватарка и ${subs.length} работ.\nДействие необратимо!`);
         if (!ok) return;
@@ -1124,15 +1122,16 @@ function updateBadges() {
     });
 }
 
-/* ---------- окно чата ---------- */
+/* ---------- чат, встроенный в страницу ---------- */
 let chatCtx = null;
 let chatTimer = null;
 
-function closeChat() {
+function stopChat() {
     if (chatTimer) clearInterval(chatTimer);
     chatTimer = null;
-    const ov = $("#chat-overlay");
-    if (ov) ov.remove();
+    chatCtx = null;
+    const el = $("#inline-chat");
+    if (el) el.remove();
 }
 
 async function renderChatBody() {
@@ -1182,15 +1181,15 @@ async function renderChatBody() {
         }));
 }
 
-function buildChatOverlay(title, placeholder) {
-    closeChat();
-    const ov = document.createElement("div");
-    ov.id = "chat-overlay";
-    ov.innerHTML = `
-        <div class="chat-window">
+function buildInlineChat(afterElement, title, placeholder) {
+    stopChat();
+    const div = document.createElement("div");
+    div.id = "inline-chat";
+    div.innerHTML = `
+        <div class="inline-chat-window">
             <div class="chat-head">
                 <span>💬 ${esc(title)}</span>
-                <button class="chat-close" id="chat-close">✖</button>
+                <button class="chat-close" id="chat-close">✖ Свернуть</button>
             </div>
             <div class="chat-body" id="chat-body"></div>
             <div class="chat-foot">
@@ -1198,9 +1197,8 @@ function buildChatOverlay(title, placeholder) {
                 <button class="btn btn-primary" id="chat-send">➤</button>
             </div>
         </div>`;
-    document.body.appendChild(ov);
-    $("#chat-close").addEventListener("click", closeChat);
-    ov.addEventListener("click", (e) => { if (e.target === ov) closeChat(); });
+    afterElement.after(div);
+    $("#chat-close").addEventListener("click", stopChat);
 
     const send = async () => {
         const input = $("#chat-input");
@@ -1220,10 +1218,12 @@ function buildChatOverlay(title, placeholder) {
     $("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
 }
 
-function openChat(studentId, name) {
+/* учитель: кнопка "Чат с учеником" открывает/сворачивает чат прямо под собой */
+function toggleTeacherChat(studentId, name) {
+    if (chatCtx && !chatCtx.isStudent && chatCtx.studentId === studentId) { stopChat(); return; }
     chatCtx = { studentId, name, isStudent: false };
-    buildChatOverlay(name, "Сообщение ученику...");
-    /* помечаем прочитанным */
+    buildInlineChat($("#chat-btn-2"), name, "Сообщение ученику...");
+    /* помечаем входящие прочитанными */
     sb.from("messages").update({ read_at: new Date().toISOString() })
         .eq("student_id", studentId).eq("sender", "student").is("read_at", null)
         .then(() => refreshUnread());
@@ -1231,9 +1231,11 @@ function openChat(studentId, name) {
     chatTimer = setInterval(renderChatBody, 5000);
 }
 
+/* ученик: кнопка "Написать учителю" открывает чат прямо под собой */
 function openStudentChat() {
+    if (chatCtx && chatCtx.isStudent && $("#inline-chat")) { stopChat(); return; }
     chatCtx = { isStudent: true, name: "Учитель" };
-    buildChatOverlay("Чат с учителем", "Напишите сообщение...");
+    buildInlineChat($("#write-teacher-btn"), "Чат с учителем", "Напишите сообщение...");
     renderChatBody();
     chatTimer = setInterval(renderChatBody, 5000);
 }
