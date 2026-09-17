@@ -579,6 +579,7 @@ function render() {
     else if (state.tab === "homeworks") renderHomeworksPage();
     else if (state.tab === "calendar") renderCalendarPage();
     else if (state.tab === "grades") renderGradesPage();
+    else if (state.tab === "messages") renderMessagesPage();
     else if (state.tab === "stats") renderStatsPage();
 }
 
@@ -608,6 +609,8 @@ function renderStudentsPage() {
             <textarea id="class-msg-text" rows="3" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font-family:inherit;font-size:14px;" placeholder="Текст сообщения всем ученикам класса..."></textarea>
             <button class="btn btn-primary" id="class-msg-send" style="margin-top:10px;">📨 Отправить</button>
         </div>
+        <button class="btn" id="class-history-btn" style="margin-bottom:14px;">🕘 История сообщений</button>
+        <div id="class-history" class="hidden" style="max-width:640px;margin-bottom:16px;"></div>
         <div class="students-grid" id="students-grid"></div>`;
 
     document.querySelectorAll("#school-tabs .sub-tab").forEach((b) =>
@@ -651,6 +654,41 @@ function renderStudentsPage() {
         $("#class-msg-text").value = "";
         $("#class-msg-form").classList.add("hidden");
         toast(`Отправлено ${sent} ученикам класса`);
+    });
+
+    /* История сообщений классу (рассылки) */
+    const chb = $("#class-history-btn");
+    if (chb) chb.addEventListener("click", async () => {
+        const box = $("#class-history");
+        box.classList.toggle("hidden");
+        if (box.classList.contains("hidden")) return;
+        box.innerHTML = `<div class="form-card"><div class="loading">Загрузка…</div></div>`;
+        const ids = list.map((s) => s.id);
+        const { data, error } = await sb.from("messages").select("text,created_at")
+            .eq("sender", "teacher").in("student_id", ids)
+            .like("text", "Сообщение всему классу:%")
+            .order("created_at", { ascending: false });
+        if (error) {
+            box.innerHTML = `<div class="error-msg" style="margin:0">Ошибка: ${esc(error.message)}</div>`;
+            return;
+        }
+        /* одна рассылка = запись на каждого ученика — оставляем по одной */
+        const seen = new Set();
+        const rows = (data || []).filter((m) => {
+            const key = m.text + "|" + String(m.created_at).slice(0, 10);
+            if (seen.has(key)) return false;
+            seen.add(key);
+            return true;
+        }).reverse(); /* хронологически: старые сверху */
+        box.innerHTML = `<div class="form-card">
+            <h3>🕘 История сообщений классу</h3>
+            ${rows.length ? rows.map((m) => `
+                <div class="hist-row">
+                    <div class="hist-date">📅 ${esc(fmtDate(String(m.created_at).slice(0, 10)))} · ${esc(fmtTime(m.created_at))}</div>
+                    <div class="hist-text">${esc(m.text)}</div>
+                </div>`).join("")
+            : `<div class="empty-note">Сообщений классу пока не было.</div>`}
+        </div>`;
     });
 }
 
@@ -1120,6 +1158,19 @@ function updateBadges() {
             b.classList.toggle("hidden", !n);
         }
     });
+
+    /* общий счётчик непрочитанных на вкладке «Сообщения» */
+    const total = Object.values(state.unread).reduce((a, b) => a + b, 0);
+    const tabBadge = $("#msg-tab-badge");
+    if (tabBadge) {
+        tabBadge.textContent = total || "";
+        tabBadge.classList.toggle("hidden", !total);
+    }
+
+    /* если открыта вкладка «Сообщения» — перерисуем список (плашки исчезают по мере прочтения) */
+    if (state.user && state.tab === "messages" && !state.selectedStudent && !$("#inline-chat")) {
+        renderMessagesPage();
+    }
 }
 
 /* ---------- чат, встроенный в страницу ---------- */
@@ -1201,7 +1252,7 @@ function buildInlineChat(anchorEl, title, placeholder, mode) {
             </div>
             <div class="chat-body" id="chat-body"></div>
             <div class="chat-foot">
-                <input type="text" id="chat-input" placeholder="${esc(placeholder)}" maxlength="2000">
+                <textarea id="chat-input" rows="1" maxlength="2000" placeholder="${esc(placeholder)}"></textarea>
                 <button class="btn btn-primary" id="chat-send">➤</button>
             </div>
         </div>`;
@@ -1228,7 +1279,16 @@ function buildInlineChat(anchorEl, title, placeholder, mode) {
         renderChatBody();
     };
     $("#chat-send").addEventListener("click", send);
-    $("#chat-input").addEventListener("keydown", (e) => { if (e.key === "Enter") send(); });
+    const ta = $("#chat-input");
+    /* Enter — отправить, Shift+Enter — новая строка */
+    ta.addEventListener("keydown", (e) => {
+        if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); send(); }
+    });
+    /* поле растёт по мере ввода (до ~5 строк) */
+    ta.addEventListener("input", () => {
+        ta.style.height = "auto";
+        ta.style.height = Math.min(ta.scrollHeight, 130) + "px";
+    });
 }
 
 /* учитель: кнопка "Чат с учеником" открывает/сворачивает чат прямо под собой */
@@ -1335,6 +1395,35 @@ async function deleteComment(studentId, dateKey) {
     }
     toast("Комментарий удалён");
     renderStudentPageT(studentId);
+}
+
+/* ---------- вкладка "Сообщения" (учитель) ---------- */
+function renderMessagesPage() {
+    const list = state.students
+        .filter((s) => state.unread[s.id])
+        .sort((a, b) => (state.unread[b.id] || 0) - (state.unread[a.id] || 0));
+
+    content.innerHTML = `
+        <h2 class="page-title">💬 Сообщения</h2>
+        ${list.length ? `
+        <p class="count-note">👤 Диалогов с непрочитанными: ${list.length} · всего сообщений: ${Object.values(state.unread).reduce((a, b) => a + b, 0)}</p>
+        <div class="students-grid" id="msg-grid"></div>` : `
+        <div class="form-card">
+            <div class="empty-note">Непрочитанных сообщений нет.<br>Диалоги с новыми сообщениями учеников появятся здесь.</div>
+        </div>`}`;
+
+    const grid = $("#msg-grid");
+    if (!grid) return;
+    grid.innerHTML = list.map((s) => `
+        <div class="student-card" data-id="${s.id}">
+            <div class="unread-dot" data-uid="${s.id}">${state.unread[s.id]}</div>
+            ${s.exam_flag && examLabel(s.class_number) ? `<div class="exam-badge">${examLabel(s.class_number)}</div>` : ""}
+            ${avatarHtml(s.avatar_url)}
+            <div class="student-name">${esc(s.last_name)}<br>${esc(s.first_name)}</div>
+            <div class="student-class">${esc(s.class_number)} класс</div>
+        </div>`).join("");
+    grid.querySelectorAll(".student-card").forEach((card) =>
+        card.addEventListener("click", () => openStudent(card.dataset.id)));
 }
 
 /* ---------- задания (учитель) ---------- */
