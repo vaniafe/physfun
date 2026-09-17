@@ -854,3 +854,57 @@ td.g-sel { outline: 3px solid var(--primary); outline-offset: -3px; }
     justify-content: space-between;
 }
 .hw-comment-actions { display: flex; gap: 6px; flex-shrink: 0; }
+
+/* ===================== ВСТРОЕННЫЙ ЧАТ ===================== */
+.inline-chat-window {
+    border-radius: 16px;
+    overflow: hidden;
+    margin-bottom: 18px;
+    box-shadow: var(--shadow);
+    border: 1px solid var(--border);
+    display: flex;
+    flex-direction: column;
+    height: 440px;
+    background: #eef2f7;
+}
+.inline-chat-window .chat-head { border-radius: 0; }
+.chat-close {
+    background: rgba(255,255,255,0.2);
+    border: none;
+    color: #fff;
+    font-size: 13px;
+    font-weight: 700;
+    cursor: pointer;
+    border-radius: 8px;
+    padding: 5px 12px;
+}
+.chat-close:hover { background: rgba(255,255,255,0.35); }
+
+/* ===================== ЦЕНТРИРОВАНИЕ ВКЛАДОК (десктоп) ===================== */
+.tabs {
+    max-width: 1200px;
+    margin: 0 auto;
+    width: 100%;
+}
+
+/* ===================== МНОГОСТРОЧНЫЙ ВВОД В ЧАТЕ ===================== */
+.chat-foot { align-items: flex-end; }
+.chat-foot textarea {
+    flex: 1;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    font-size: 14px;
+    font-family: inherit;
+    outline: none;
+    resize: none;
+    line-height: 1.4;
+    max-height: 130px;
+    overflow-y: auto;
+}
+
+/* ===================== ИСТОРИЯ СООБЩЕНИЙ КЛАССУ ===================== */
+.hist-row { border-bottom: 1px solid var(--border); padding: 10px 0; }
+.hist-row:last-child { border-bottom: none; }
+.hist-date { font-size: 12px; color: var(--text-muted); font-weight: 700; margin-bottom: 4px; }
+.hist-text { font-size: 14px; line-height: 1.5; white-space: pre-wrap; }
