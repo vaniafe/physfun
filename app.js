@@ -662,34 +662,59 @@ function renderStudentsPage() {
         const box = $("#class-history");
         box.classList.toggle("hidden");
         if (box.classList.contains("hidden")) return;
-        box.innerHTML = `<div class="form-card"><div class="loading">Загрузка…</div></div>`;
-        const ids = list.map((s) => s.id);
-        const { data, error } = await sb.from("messages").select("text,created_at")
-            .eq("sender", "teacher").in("student_id", ids)
-            .like("text", "Сообщение всему классу:%")
-            .order("created_at", { ascending: false });
-        if (error) {
-            box.innerHTML = `<div class="error-msg" style="margin:0">Ошибка: ${esc(error.message)}</div>`;
-            return;
-        }
-        /* одна рассылка = запись на каждого ученика — оставляем по одной */
-        const seen = new Set();
-        const rows = (data || []).filter((m) => {
-            const key = m.text + "|" + String(m.created_at).slice(0, 10);
-            if (seen.has(key)) return false;
-            seen.add(key);
-            return true;
-        }).reverse(); /* хронологически: старые сверху */
-        box.innerHTML = `<div class="form-card">
-            <h3>🕘 История сообщений классу</h3>
-            ${rows.length ? rows.map((m) => `
-                <div class="hist-row">
-                    <div class="hist-date">📅 ${esc(fmtDate(String(m.created_at).slice(0, 10)))} · ${esc(fmtTime(m.created_at))}</div>
-                    <div class="hist-text">${esc(m.text)}</div>
-                </div>`).join("")
-            : `<div class="empty-note">Сообщений классу пока не было.</div>`}
-        </div>`;
+        await loadClassHistory(box, list);
     });
+}
+
+/* ---------- история рассылок классу ---------- */
+const BROADCAST_PREFIX = "Сообщение всему классу: ";
+
+async function loadClassHistory(box, list) {
+    box.innerHTML = `<div class="form-card"><div class="loading">Загрузка…</div></div>`;
+    const ids = list.map((s) => s.id);
+    const { data, error } = await sb.from("messages").select("id,text,created_at")
+        .eq("sender", "teacher").in("student_id", ids)
+        .like("text", BROADCAST_PREFIX + "%")
+        .order("created_at", { ascending: false });
+    if (error) {
+        box.innerHTML = `<div class="error-msg" style="margin:0">Ошибка: ${esc(error.message)}</div>`;
+        return;
+    }
+    /* одна рассылка = запись на каждого ученика — группируем; новые сверху */
+    const groups = new Map();
+    (data || []).forEach((m) => {
+        const key = m.text + "|" + String(m.created_at).slice(0, 10);
+        if (!groups.has(key)) groups.set(key, { text: m.text, created_at: m.created_at, ids: [] });
+        groups.get(key).ids.push(m.id);
+    });
+    const rows = [...groups.values()];
+    box.innerHTML = `<div class="form-card">
+        <h3>🕘 История сообщений классу</h3>
+        ${rows.length ? rows.map((m) => {
+            const body = m.text.startsWith(BROADCAST_PREFIX) ? m.text.slice(BROADCAST_PREFIX.length) : m.text;
+            const key = m.text + "|" + String(m.created_at).slice(0, 10);
+            return `
+                <div class="hist-row">
+                    <div class="hist-date">
+                        <span>📅 ${esc(fmtDate(String(m.created_at).slice(0, 10)))} · ${esc(fmtTime(m.created_at))}</span>
+                        <button class="btn btn-sm btn-danger hist-del" data-key="${esc(key)}" title="Удалить из истории">🗑</button>
+                    </div>
+                    <div class="hist-text">${esc(body)}</div>
+                </div>`;
+        }).join("")
+        : `<div class="empty-note">Сообщений классу пока не было.</div>`}
+    </div>`;
+
+    box.querySelectorAll(".hist-del").forEach((b) =>
+        b.addEventListener("click", async () => {
+            const g = groups.get(b.dataset.key);
+            if (!g) return;
+            if (!confirm("Удалить это сообщение из истории?\n(В чатах учеников оно останется)")) return;
+            const { error: delErr } = await sb.from("messages").delete().in("id", g.ids);
+            if (delErr) return toast("Ошибка: " + delErr.message, true);
+            toast("Сообщение удалено из истории");
+            await loadClassHistory(box, list);
+        }));
 }
 
 /* ---------- страница ученика (учитель) ---------- */
