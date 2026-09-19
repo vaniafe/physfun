@@ -425,7 +425,7 @@ function renderStudentWorks() {
         block.className = "work-block";
         block.innerHTML = `
             <div class="work-block-head">
-                <div class="work-date">📅 ${esc(fmtDate(dateKey))}${items[0].grade ? ` &nbsp;<span class="badge badge-graded">Оценка: ${items[0].grade}</span>` : ""}</div>
+                <div class="work-date">📅 ${esc(fmtDate(dateKey))}${items[0].status !== "pending" ? ` <span class="checked-tick" title="Работа проверена учителем">✔ Работа проверена</span>` : ""}${items[0].grade ? ` &nbsp;<span class="badge badge-graded">Оценка: ${items[0].grade}</span>` : ""}</div>
                 <span class="badge ${badge.cls}">${badge.text}</span>
             </div>
             ${studentComms[dateKey] ? `<div class="hw-comment"><b>💬 Комментарий учителя:</b> ${esc(studentComms[dateKey].text)}</div>` : ""}
@@ -1216,7 +1216,7 @@ async function rotatePhotoFile(url, bucket) {
     canvas.height = img.naturalWidth;
     const ctx = canvas.getContext("2d");
     ctx.translate(canvas.width / 2, canvas.height / 2);
-    ctx.rotate(Math.PI / 2); /* 90° по часовой */
+    ctx.rotate(-Math.PI / 2); /* 90° против часовой */
     ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
     const blob = await new Promise((ok) => canvas.toBlob(ok, "image/jpeg", 0.92));
     if (!blob) throw new Error("ошибка обработки изображения");
@@ -1227,7 +1227,7 @@ async function rotatePhotoFile(url, bucket) {
 function photoCell(url, bucket) {
     return `<div class="photo-wrap" data-purl="${esc(url)}">`
         + `<img src="${esc(url)}" alt="Работа" loading="lazy">`
-        + `<button class="rotate-btn" type="button" title="Повернуть на 90° по часовой">↻</button>`
+        + `<button class="rotate-btn" type="button" title="Повернуть на 90° против часовой стрелки">↺</button>`
         + `</div>`;
 }
 
