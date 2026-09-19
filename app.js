@@ -430,7 +430,7 @@ function renderStudentWorks() {
             </div>
             ${studentComms[dateKey] ? `<div class="hw-comment"><b>💬 Комментарий учителя:</b> ${esc(studentComms[dateKey].text)}</div>` : ""}
             <div class="photos-grid">
-                ${items.map((i) => `<img src="${esc(i.photo_url)}" alt="Работа" loading="lazy">`).join("")}
+                ${items.map((i) => photoCell(i.photo_url, "homework-photos")).join("")}
             </div>`;
         wrap.appendChild(block);
     });
@@ -443,6 +443,7 @@ function renderStudentWorks() {
             lb.addEventListener("click", () => lb.remove());
             document.body.appendChild(lb);
         }));
+    wireRotateButtons(wrap, "homework-photos", true);
 }
 
 /* ---------- сдача работы ---------- */
@@ -833,7 +834,7 @@ function renderStudentPageT(studentId) {
                 <button class="btn btn-sm" data-comment="${esc(dateKey)}">💬 ${state.comments.some((x) => x.student_id === studentId && String(x.date) === dateKey && !x.deleted) ? "Комментарий" : "Отправить комментарий"}</button>
             </div>
             <div class="photos-grid">
-                ${items.map((i) => `<img src="${esc(i.photo_url)}" alt="Работа" loading="lazy">`).join("")}
+                ${items.map((i) => photoCell(i.photo_url, "homework-photos")).join("")}
             </div>
             ${commentHtmlT(studentId, dateKey)}
             <div class="work-controls">
@@ -886,6 +887,7 @@ function renderStudentPageT(studentId) {
     });
     works.querySelectorAll(".photos-grid img").forEach((img) =>
         img.addEventListener("click", () => openLightbox(img.src)));
+    wireRotateButtons(works, "homework-photos");
 
     works.querySelectorAll("[data-comment]").forEach((b) =>
         b.addEventListener("click", () => openCommentModal(studentId, b.dataset.comment)));
@@ -1196,6 +1198,83 @@ function updateBadges() {
     if (state.user && state.tab === "messages" && !state.selectedStudent && !$("#inline-chat")) {
         renderMessagesPage();
     }
+}
+
+/* ---------- поворот фото работ ---------- */
+async function rotatePhotoFile(url, bucket) {
+    const path = storagePath(url, bucket);
+    if (!path) throw new Error("не удалось определить путь файла");
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    await new Promise((ok, bad) => {
+        img.onload = ok;
+        img.onerror = () => bad(new Error("не удалось загрузить фото"));
+        img.src = url;
+    });
+    const canvas = document.createElement("canvas");
+    canvas.width = img.naturalHeight;
+    canvas.height = img.naturalWidth;
+    const ctx = canvas.getContext("2d");
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate(Math.PI / 2); /* 90° по часовой */
+    ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
+    const blob = await new Promise((ok) => canvas.toBlob(ok, "image/jpeg", 0.92));
+    if (!blob) throw new Error("ошибка обработки изображения");
+    const { error } = await sb.storage.from(bucket).upload(path, blob, { upsert: true, contentType: "image/jpeg" });
+    if (error) throw new Error(error.message);
+}
+
+function photoCell(url, bucket) {
+    return `<div class="photo-wrap" data-purl="${esc(url)}">`
+        + `<img src="${esc(url)}" alt="Работа" loading="lazy">`
+        + `<button class="rotate-btn" type="button" title="Повернуть на 90° по часовой">↻</button>`
+        + `</div>`;
+}
+
+function wireRotateButtons(container, bucket, isStudent = false) {
+    container.querySelectorAll(".rotate-btn").forEach((b) =>
+        b.addEventListener("click", async (e) => {
+            e.stopPropagation();
+            const wrap = b.closest(".photo-wrap");
+            const url = wrap.dataset.purl;
+            b.disabled = true;
+            const old = b.textContent;
+            b.textContent = "⏳";
+            try {
+                await rotatePhotoFile(url, bucket);
+                /* новый адрес с меткой версии — CDN отдаст свежий файл всем сразу */
+                const base = url.split("?")[0];
+                const newUrl = base + "?v=" + Date.now();
+                if (isStudent) {
+                    const { data: r } = await sb.rpc("rotate_my_photo", {
+                        p_login: studentCreds.login, p_password: studentCreds.password,
+                        p_old_url: url, p_new_url: newUrl,
+                    });
+                    if (r && r.error) throw new Error(r.error);
+                    (typeof studentSubmissions !== "undefined" ? studentSubmissions : []).forEach((s) => {
+                        if (String(s.photo_url).split("?")[0] === base) s.photo_url = newUrl;
+                    });
+                } else {
+                    const { error: upErr } = await sb.from("submissions")
+                        .update({ photo_url: newUrl }).like("photo_url", base + "*");
+                    if (upErr) throw new Error(upErr.message);
+                    (state.submissions || []).forEach((s) => {
+                        if (String(s.photo_url).split("?")[0] === base) s.photo_url = newUrl;
+                    });
+                }
+                container.querySelectorAll(".photo-wrap").forEach((w) => {
+                    if (w.dataset.purl === url) {
+                        w.dataset.purl = newUrl;
+                        w.querySelector("img").src = newUrl;
+                    }
+                });
+                toast("Фото повёрнуто на 90°");
+            } catch (err) {
+                toast("Ошибка: " + err.message, true);
+            }
+            b.textContent = old;
+            b.disabled = false;
+        }));
 }
 
 /* ---------- чат, встроенный в страницу ---------- */

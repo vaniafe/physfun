@@ -911,3 +911,28 @@ td.g-sel { outline: 3px solid var(--primary); outline-offset: -3px; }
 
 /* ===================== ИСТОРИЯ: КНОПКА УДАЛЕНИЯ ===================== */
 .hist-date { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
+
+/* ===================== ПОВОРОТ ФОТО ===================== */
+.photo-wrap { position: relative; display: block; }
+.rotate-btn {
+    position: absolute;
+    left: 6px;
+    bottom: 6px;
+    width: 30px;
+    height: 30px;
+    border-radius: 50%;
+    background: rgba(17, 24, 39, 0.65);
+    color: #fff;
+    border: none;
+    cursor: pointer;
+    font-size: 16px;
+    line-height: 1;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.85;
+    transition: opacity .15s, background .15s;
+    z-index: 2;
+}
+.rotate-btn:hover { background: rgba(17, 24, 39, 0.92); opacity: 1; }
+.rotate-btn:disabled { cursor: default; }
