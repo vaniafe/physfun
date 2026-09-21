@@ -446,8 +446,59 @@ function renderStudentWorks() {
     wireRotateButtons(wrap, "homework-photos", true);
 }
 
+/* ---------- обновление фото профиля (если учитель запросил) ---------- */
+function openAvatarUpdate() {
+    const c = $("#student-content");
+    c.innerHTML = `
+        <div class="back-row"><button class="btn" id="av-back">⬅️ Назад</button></div>
+        <div class="form-card submit-panel">
+            <h3>📸 Необходимо обновить фото профиля</h3>
+            <div class="reg-step-sub">Учитель запросил актуальную фотографию вашего лица.<br>После обновления вы сможете отправить домашнее задание.</div>
+            <label class="file-drop" id="av-drop">
+                📎 <span id="av-drop-label">Нажмите, чтобы выбрать фото</span>
+                <input type="file" id="av-file" accept="image/*">
+            </label>
+            <div id="av-progress" style="font-size:14px;color:var(--text-muted);margin-top:10px;"></div>
+        </div>`;
+    $("#av-back").addEventListener("click", renderStudentPage);
+    $("#av-file").addEventListener("change", async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+        const progress = $("#av-progress");
+        progress.textContent = "⏳ Загрузка фото...";
+        try {
+            const img = await prepareImage(file, 1200);
+            const path = `web_${studentCreds.login}_${Date.now()}.jpg`;
+            const { error: upErr } = await sb.storage.from("avatars")
+                .upload(path, img, { contentType: "image/jpeg" });
+            if (upErr) throw new Error(upErr.message);
+            const avatarUrl = sb.storage.from("avatars").getPublicUrl(path).data.publicUrl;
+            const { data: r } = await sb.rpc("update_my_avatar", {
+                p_login: studentCreds.login,
+                p_password: studentCreds.password,
+                p_avatar_url: avatarUrl,
+            });
+            if (r && r.error) throw new Error(r.error);
+            /* старый файл аватарки удаляем */
+            const oldPath = storagePath(studentInfo.avatar_url, "avatars");
+            if (oldPath) { try { await sb.storage.from("avatars").remove([oldPath]); } catch (_) {} }
+            studentInfo.avatar_url = avatarUrl;
+            studentInfo.needs_avatar_update = false;
+            toast("Фото профиля обновлено!");
+            openSubmitPanel();
+        } catch (err) {
+            progress.textContent = "❌ Ошибка: " + err.message;
+        }
+    });
+}
+
 /* ---------- сдача работы ---------- */
 function openSubmitPanel() {
+    /* как в боте: сначала обновляем фото профиля, если учитель запросил */
+    if (studentInfo.needs_avatar_update) {
+        openAvatarUpdate();
+        return;
+    }
     const today = new Date();
     const lo = new Date(today); lo.setDate(lo.getDate() - 1);
     const hi = new Date(today); hi.setDate(hi.getDate() + 5);
