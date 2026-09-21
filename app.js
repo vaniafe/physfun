@@ -493,7 +493,16 @@ function openAvatarUpdate() {
 }
 
 /* ---------- сдача работы ---------- */
-function openSubmitPanel() {
+async function openSubmitPanel() {
+    /* свежие данные ученика: флаг "сменить фото" мог появиться после его входа */
+    try {
+        const { data: fresh } = await sb.rpc("student_login", {
+            p_login: studentCreds.login,
+            p_password: studentCreds.password,
+        });
+        if (fresh && fresh.length) studentInfo = fresh[0];
+    } catch (e) { /* нет связи — работаем с тем, что есть */ }
+
     /* как в боте: сначала обновляем фото профиля, если учитель запросил */
     if (studentInfo.needs_avatar_update) {
         openAvatarUpdate();
