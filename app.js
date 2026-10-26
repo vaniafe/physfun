@@ -1296,10 +1296,17 @@ async function rotatePhotoFile(url, bucket) {
     ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
     const blob = await new Promise((ok) => canvas.toBlob(ok, "image/jpeg", 0.92));
     if (!blob) throw new Error("ошибка обработки изображения");
+    /* Не перезаписываем исходник: обычная загрузка нового файла работает
+       без x-upsert и не требует разрешения UPDATE для Storage. */
+    const rotatedPath = `rotated/${crypto.randomUUID()}.jpg`;
     await retryNetworkRequest(async () => {
-        const { error } = await sb.storage.from(bucket).upload(path, blob, { upsert: true, contentType: "image/jpeg" });
+        const { error } = await sb.storage.from(bucket).upload(rotatedPath, blob, {
+            upsert: false,
+            contentType: "image/jpeg",
+        });
         if (error) throw new Error(error.message);
     });
+    return sb.storage.from(bucket).getPublicUrl(rotatedPath).data.publicUrl;
 }
 
 function photoCell(url, bucket) {
@@ -1320,11 +1327,9 @@ function wireRotateButtons(container, bucket, isStudent = false) {
             b.textContent = "⏳";
             let stage = "сохранение повернутого файла";
             try {
-                await rotatePhotoFile(url, bucket);
+                const newUrl = await rotatePhotoFile(url, bucket);
                 stage = "обновление ссылки на фотографию";
-                /* новый адрес с меткой версии — CDN отдаст свежий файл всем сразу */
                 const base = url.split("?")[0];
-                const newUrl = base + "?v=" + Date.now();
                 if (isStudent) {
                     const { data: r } = await retryNetworkRequest(() => sb.rpc("rotate_my_photo", {
                         p_login: studentCreds.login, p_password: studentCreds.password,
