@@ -1261,6 +1261,22 @@ function updateBadges() {
 }
 
 /* ---------- поворот фото работ ---------- */
+async function retryNetworkRequest(operation, attempts = 3) {
+    let lastError;
+    for (let attempt = 1; attempt <= attempts; attempt++) {
+        try {
+            return await operation();
+        } catch (error) {
+            lastError = error;
+            const networkError = error instanceof TypeError
+                || /failed to fetch|networkerror|load failed|timeout/i.test(String(error?.message || error));
+            if (!networkError || attempt === attempts) throw error;
+            await new Promise((resolve) => setTimeout(resolve, 700 * attempt));
+        }
+    }
+    throw lastError;
+}
+
 async function rotatePhotoFile(url, bucket) {
     const path = storagePath(url, bucket);
     if (!path) throw new Error("не удалось определить путь файла");
@@ -1280,8 +1296,10 @@ async function rotatePhotoFile(url, bucket) {
     ctx.drawImage(img, -img.naturalWidth / 2, -img.naturalHeight / 2);
     const blob = await new Promise((ok) => canvas.toBlob(ok, "image/jpeg", 0.92));
     if (!blob) throw new Error("ошибка обработки изображения");
-    const { error } = await sb.storage.from(bucket).upload(path, blob, { upsert: true, contentType: "image/jpeg" });
-    if (error) throw new Error(error.message);
+    await retryNetworkRequest(async () => {
+        const { error } = await sb.storage.from(bucket).upload(path, blob, { upsert: true, contentType: "image/jpeg" });
+        if (error) throw new Error(error.message);
+    });
 }
 
 function photoCell(url, bucket) {
@@ -1300,23 +1318,25 @@ function wireRotateButtons(container, bucket, isStudent = false) {
             b.disabled = true;
             const old = b.textContent;
             b.textContent = "⏳";
+            let stage = "сохранение повернутого файла";
             try {
                 await rotatePhotoFile(url, bucket);
+                stage = "обновление ссылки на фотографию";
                 /* новый адрес с меткой версии — CDN отдаст свежий файл всем сразу */
                 const base = url.split("?")[0];
                 const newUrl = base + "?v=" + Date.now();
                 if (isStudent) {
-                    const { data: r } = await sb.rpc("rotate_my_photo", {
+                    const { data: r } = await retryNetworkRequest(() => sb.rpc("rotate_my_photo", {
                         p_login: studentCreds.login, p_password: studentCreds.password,
                         p_old_url: url, p_new_url: newUrl,
-                    });
+                    }));
                     if (r && r.error) throw new Error(r.error);
                     (typeof studentSubmissions !== "undefined" ? studentSubmissions : []).forEach((s) => {
                         if (String(s.photo_url).split("?")[0] === base) s.photo_url = newUrl;
                     });
                 } else {
-                    const { error: upErr } = await sb.from("submissions")
-                        .update({ photo_url: newUrl }).like("photo_url", base + "*");
+                    const { error: upErr } = await retryNetworkRequest(() => sb.from("submissions")
+                        .update({ photo_url: newUrl }).like("photo_url", base + "*"));
                     if (upErr) throw new Error(upErr.message);
                     (state.submissions || []).forEach((s) => {
                         if (String(s.photo_url).split("?")[0] === base) s.photo_url = newUrl;
@@ -1330,7 +1350,7 @@ function wireRotateButtons(container, bucket, isStudent = false) {
                 });
                 toast("Фото повёрнуто на 90°");
             } catch (err) {
-                toast("Ошибка: " + err.message, true);
+                toast(`Ошибка (${stage}): ` + err.message, true);
             }
             b.textContent = old;
             b.disabled = false;
