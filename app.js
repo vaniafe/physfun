@@ -118,6 +118,47 @@ function storagePath(url, bucket) {
     return url.slice(idx + marker.length).split("?")[0];
 }
 
+const DELIVERY_LABELS = {
+    pending: "В очереди",
+    sending: "Отправляется",
+    retry: "Повторная попытка",
+    waiting_telegram: "Ожидает Telegram",
+    blocked: "Бот заблокирован",
+    failed: "Ошибка",
+    delivered: "Доставлено",
+};
+
+function newBroadcastId() {
+    if (window.crypto && typeof crypto.randomUUID === "function") return crypto.randomUUID();
+    /* Совместимость со старыми браузерами: формируем UUID v4 через getRandomValues. */
+    const bytes = new Uint8Array(16);
+    crypto.getRandomValues(bytes);
+    bytes[6] = (bytes[6] & 0x0f) | 0x40;
+    bytes[8] = (bytes[8] & 0x3f) | 0x80;
+    const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
+    return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+}
+
+async function queueBroadcast(recipients, payload) {
+    if (!recipients.length) throw new Error("Нет учеников для выбранных получателей");
+    const broadcastId = newBroadcastId();
+    const now = new Date().toISOString();
+    const rows = recipients.map((student) => ({
+        student_id: student.id,
+        sender: "teacher",
+        text: payload.text,
+        message_type: payload.messageType || "text",
+        audio_url: payload.audioUrl || null,
+        audio_name: payload.audioName || null,
+        broadcast_id: broadcastId,
+        delivery_status: "pending",
+        delivery_available_at: now,
+    }));
+    const { error } = await sb.from("messages").insert(rows);
+    if (error) throw error;
+    return broadcastId;
+}
+
 function academicMonths() {
     const now = new Date();
     const y0 = now.getMonth() >= 8 ? now.getFullYear() : now.getFullYear() - 1;
@@ -664,14 +705,32 @@ function renderStudentsPage() {
             ${classes.map((c) => `<button class="sub-tab ${c === state.classNumber ? "active" : ""}" data-class="${esc(c)}">${esc(c)} класс</button>`).join("")}
         </div>
         <p class="count-note">👥 Всего: ${list.length} учеников</p>
-        <button class="btn" id="class-msg-btn" style="margin-bottom:14px;">📨 Отправить сообщение классу</button>
-        <div id="class-msg-form" class="form-card hidden" style="max-width:560px;">
-            <h3>📨 Сообщение для ${esc(state.classNumber)} класса</h3>
-            <textarea id="class-msg-text" rows="3" style="width:100%;padding:10px 12px;border:1px solid var(--border);border-radius:10px;font-family:inherit;font-size:14px;" placeholder="Текст сообщения всем ученикам класса..."></textarea>
-            <button class="btn btn-primary" id="class-msg-send" style="margin-top:10px;">📨 Отправить</button>
+        <div class="broadcast-actions">
+            <button class="btn" id="class-msg-btn">📨 Сообщение классу</button>
+            <button class="btn" id="audio-msg-btn">🎵 Аудиорассылка</button>
+            <button class="btn" id="class-history-btn">🕘 История и доставка</button>
         </div>
-        <button class="btn" id="class-history-btn" style="margin-bottom:14px;">🕘 История сообщений</button>
-        <div id="class-history" class="hidden" style="max-width:640px;margin-bottom:16px;"></div>
+        <div id="class-msg-form" class="form-card hidden broadcast-form">
+            <h3>📨 Сообщение для ${esc(state.classNumber)} класса</h3>
+            <textarea id="class-msg-text" rows="3" maxlength="3500" placeholder="Текст сообщения всем ученикам класса..."></textarea>
+            <button class="btn btn-primary" id="class-msg-send">Поставить в очередь</button>
+        </div>
+        <div id="audio-msg-form" class="form-card hidden broadcast-form">
+            <h3>🎵 Аудиорассылка</h3>
+            <label for="audio-recipients">Кому отправить</label>
+            <select id="audio-recipients">
+                <option value="class">${esc(state.classNumber)} класс — ${esc(state.school)}</option>
+                <option value="school">Все ученики школы — ${esc(state.school)}</option>
+                <option value="all">Все ученики</option>
+            </select>
+            <label for="audio-file">Аудиофайл MP3 или M4A, до 45 МБ</label>
+            <input type="file" id="audio-file" accept=".mp3,.m4a,audio/mpeg,audio/mp4,audio/x-m4a">
+            <label for="audio-caption">Подпись (необязательно)</label>
+            <textarea id="audio-caption" rows="2" maxlength="900" placeholder="Например: послушайте эту песню к следующему уроку"></textarea>
+            <div id="audio-progress" class="broadcast-progress" aria-live="polite"></div>
+            <button class="btn btn-primary" id="audio-msg-send">Загрузить и поставить в очередь</button>
+        </div>
+        <div id="class-history" class="hidden broadcast-history"></div>
         <div class="students-grid" id="students-grid"></div>`;
 
     document.querySelectorAll("#school-tabs .sub-tab").forEach((b) =>
@@ -682,8 +741,7 @@ function renderStudentsPage() {
     const grid = $("#students-grid");
     if (!list.length) {
         grid.innerHTML = `<div class="empty-note" style="grid-column:1/-1">В этом классе пока нет учеников.<br>Ученики регистрируются через бота или кнопку «Зарегистрироваться» на сайте.</div>`;
-        return;
-    }
+    } else {
     grid.innerHTML = list.map((s) => `
         <div class="student-card" data-id="${s.id}">
             <div class="unread-dot ${state.unread[s.id] ? "" : "hidden"}" data-uid="${s.id}">${state.unread[s.id] || ""}</div>
@@ -695,86 +753,188 @@ function renderStudentsPage() {
         </div>`).join("");
     grid.querySelectorAll(".student-card").forEach((card) =>
         card.addEventListener("click", () => openStudent(card.dataset.id)));
+    }
 
-    const cmb = $("#class-msg-btn");
-    if (cmb) cmb.addEventListener("click", () => $("#class-msg-form").classList.toggle("hidden"));
-    const cms = $("#class-msg-send");
-    if (cms) cms.addEventListener("click", async () => {
-        const text = ($("#class-msg-text").value || "").trim();
-        if (!text) return toast("Введите текст сообщения", true);
-        cms.disabled = true;
-        let sent = 0;
-        for (const s of list) {
-            const { error } = await sb.from("messages").insert({
-                student_id: s.id, sender: "teacher",
-                text: "Сообщение всему классу: " + text,
-            });
-            if (!error) sent++;
-        }
-        cms.disabled = false;
-        $("#class-msg-text").value = "";
+    $("#class-msg-btn").addEventListener("click", () => {
+        $("#audio-msg-form").classList.add("hidden");
+        $("#class-msg-form").classList.toggle("hidden");
+    });
+    $("#audio-msg-btn").addEventListener("click", () => {
         $("#class-msg-form").classList.add("hidden");
-        toast(`Отправлено ${sent} ученикам класса`);
+        $("#audio-msg-form").classList.toggle("hidden");
     });
 
-    /* История сообщений классу (рассылки) */
-    const chb = $("#class-history-btn");
-    if (chb) chb.addEventListener("click", async () => {
+    $("#class-msg-send").addEventListener("click", async () => {
+        const text = ($("#class-msg-text").value || "").trim();
+        if (!text) return toast("Введите текст сообщения", true);
+        const button = $("#class-msg-send");
+        button.disabled = true;
+        try {
+            await queueBroadcast(list, {
+                messageType: "text",
+                text: "Сообщение всему классу: " + text,
+            });
+            $("#class-msg-text").value = "";
+            $("#class-msg-form").classList.add("hidden");
+            toast(`Сообщение поставлено в очередь: ${list.length} ученикам`);
+        } catch (error) {
+            toast("Не удалось создать рассылку: " + error.message, true);
+        } finally {
+            button.disabled = false;
+        }
+    });
+
+    $("#audio-msg-send").addEventListener("click", async () => {
+        const file = $("#audio-file").files[0];
+        if (!file) return toast("Выберите аудиофайл", true);
+        const lowerName = file.name.toLowerCase();
+        if (!lowerName.endsWith(".mp3") && !lowerName.endsWith(".m4a")) {
+            return toast("Нужен файл MP3 или M4A", true);
+        }
+        if (!file.size) return toast("Выбран пустой файл", true);
+        if (file.size > 45 * 1024 * 1024) return toast("Файл больше 45 МБ", true);
+        const recipientMode = $("#audio-recipients").value;
+        const recipients = recipientMode === "all" ? state.students
+            : recipientMode === "school" ? state.students.filter((s) => s.school === state.school)
+            : list;
+        if (!recipients.length) return toast("В выбранной группе нет учеников", true);
+
+        const button = $("#audio-msg-send");
+        const progress = $("#audio-progress");
+        button.disabled = true;
+        const extension = lowerName.endsWith(".m4a") ? ".m4a" : ".mp3";
+        const path = `broadcasts/${newBroadcastId()}${extension}`;
+        let uploaded = false;
+        try {
+            progress.textContent = "Загрузка аудио в Supabase…";
+            const { error: uploadError } = await sb.storage.from("message-audio").upload(path, file, {
+                contentType: file.type || (extension === ".mp3" ? "audio/mpeg" : "audio/mp4"),
+                upsert: false,
+            });
+            if (uploadError) throw uploadError;
+            uploaded = true;
+            const audioUrl = sb.storage.from("message-audio").getPublicUrl(path).data.publicUrl;
+            progress.textContent = `Создание очереди для ${recipients.length} учеников…`;
+            await queueBroadcast(recipients, {
+                messageType: "audio",
+                text: ($("#audio-caption").value || "").trim() || file.name,
+                audioUrl,
+                audioName: file.name,
+            });
+            $("#audio-file").value = "";
+            $("#audio-caption").value = "";
+            progress.textContent = "";
+            $("#audio-msg-form").classList.add("hidden");
+            toast(`Аудио поставлено в очередь: ${recipients.length} ученикам`);
+        } catch (error) {
+            if (uploaded) {
+                try { await sb.storage.from("message-audio").remove([path]); } catch (_) {}
+            }
+            progress.textContent = "Ошибка: " + error.message;
+            toast("Аудиорассылка не создана", true);
+        } finally {
+            button.disabled = false;
+        }
+    });
+
+    $("#class-history-btn").addEventListener("click", async () => {
         const box = $("#class-history");
         box.classList.toggle("hidden");
-        if (box.classList.contains("hidden")) return;
-        await loadClassHistory(box, list);
+        if (!box.classList.contains("hidden")) await loadBroadcastHistory(box, list);
     });
 }
 
-/* ---------- история рассылок классу ---------- */
-const BROADCAST_PREFIX = "Сообщение всему классу: ";
-
-async function loadClassHistory(box, list) {
-    box.innerHTML = `<div class="form-card"><div class="loading">Загрузка…</div></div>`;
-    const ids = list.map((s) => s.id);
-    const { data, error } = await sb.from("messages").select("id,text,created_at")
-        .eq("sender", "teacher").in("student_id", ids)
-        .like("text", BROADCAST_PREFIX + "%")
-        .order("created_at", { ascending: false });
-    if (error) {
-        box.innerHTML = `<div class="error-msg" style="margin:0">Ошибка: ${esc(error.message)}</div>`;
+async function loadBroadcastHistory(box, list) {
+    box.innerHTML = `<div class="form-card"><div class="loading">Загрузка статусов…</div></div>`;
+    if (!list.length) {
+        box.innerHTML = `<div class="form-card"><div class="empty-note">В классе пока нет учеников.</div></div>`;
         return;
     }
-    /* одна рассылка = запись на каждого ученика — группируем; новые сверху */
+    const ids = list.map((s) => s.id);
+    const { data, error } = await sb.from("messages")
+        .select("id,student_id,text,created_at,message_type,audio_name,broadcast_id,delivery_status,delivery_error,delivery_attempts,delivered_at")
+        .eq("sender", "teacher").eq("deleted", false).in("student_id", ids)
+        .order("created_at", { ascending: false }).limit(500);
+    if (error) {
+        box.innerHTML = `<div class="error-msg">Ошибка: ${esc(error.message)}</div>`;
+        return;
+    }
+    const broadcasts = (data || []).filter((m) =>
+        m.broadcast_id || String(m.text || "").startsWith("Сообщение всему классу:"));
     const groups = new Map();
-    (data || []).forEach((m) => {
-        const key = m.text + "|" + String(m.created_at).slice(0, 10);
-        if (!groups.has(key)) groups.set(key, { text: m.text, created_at: m.created_at, ids: [] });
-        groups.get(key).ids.push(m.id);
+    broadcasts.forEach((message) => {
+        const key = message.broadcast_id || `legacy|${message.message_type}|${message.text}|${message.audio_name || ""}`;
+        if (!groups.has(key)) groups.set(key, []);
+        groups.get(key).push(message);
     });
-    const rows = [...groups.values()];
+    if (!groups.size) {
+        box.innerHTML = `<div class="form-card"><h3>🕘 История класса</h3><div class="empty-note">Рассылок пока не было.</div></div>`;
+        return;
+    }
+    const studentMap = Object.fromEntries(list.map((s) => [String(s.id), s]));
+    const groupList = [...groups.values()];
+    const groupHtml = groupList.map((messages, index) => {
+        const first = messages[0];
+        const counts = {};
+        messages.forEach((m) => { counts[m.delivery_status] = (counts[m.delivery_status] || 0) + 1; });
+        const summary = Object.entries(counts).map(([status, count]) =>
+            `<span class="delivery-chip delivery-${esc(status)}">${esc(DELIVERY_LABELS[status] || status)}: ${count}</span>`).join("");
+        return `<section class="broadcast-group">
+            <div class="hist-date">${first.message_type === "audio" ? "🎵" : "📨"} ${esc(fmtTime(first.created_at))}</div>
+            <div class="hist-text">${first.message_type === "audio" ? `<strong>${esc(first.audio_name || "Аудиофайл")}</strong><br>` : ""}${esc(first.text)}</div>
+            <div class="delivery-summary">${summary}</div>
+            <div class="broadcast-group-actions">
+                <button class="btn btn-sm history-details-toggle" data-details="${index}">Получатели</button>
+                <button class="btn btn-sm btn-danger history-delete" data-group="${index}" title="Удалить рассылку из истории">🗑 Удалить из истории</button>
+            </div>
+            <div class="delivery-details hidden" id="delivery-details-${index}">
+                ${messages.map((m) => {
+                    const student = studentMap[String(m.student_id)] || {};
+                    return `<div class="delivery-student">
+                        <div><strong>${esc(student.last_name || "")} ${esc(student.first_name || "")}</strong><br>
+                        <span class="delivery-status delivery-${esc(m.delivery_status)}">${esc(DELIVERY_LABELS[m.delivery_status] || m.delivery_status)}</span>
+                        ${m.delivery_error ? `<div class="delivery-error">${esc(m.delivery_error)}</div>` : ""}</div>
+                        ${m.delivery_status === "failed" ? `<button class="btn btn-sm retry-message" data-message-id="${m.id}">Повторить</button>` : ""}
+                    </div>`;
+                }).join("")}
+            </div>
+        </section>`;
+    }).join("");
     box.innerHTML = `<div class="form-card">
-        <h3>🕘 История сообщений классу</h3>
-        ${rows.length ? rows.map((m) => {
-            const body = m.text.startsWith(BROADCAST_PREFIX) ? m.text.slice(BROADCAST_PREFIX.length) : m.text;
-            const key = m.text + "|" + String(m.created_at).slice(0, 10);
-            return `
-                <div class="hist-row">
-                    <div class="hist-date">
-                        <span>📅 ${esc(fmtDate(String(m.created_at).slice(0, 10)))} · ${esc(fmtTime(m.created_at))}</span>
-                        <button class="btn btn-sm btn-danger hist-del" data-key="${esc(key)}" title="Удалить из истории">🗑</button>
-                    </div>
-                    <div class="hist-text">${esc(body)}</div>
-                </div>`;
-        }).join("")
-        : `<div class="empty-note">Сообщений классу пока не было.</div>`}
+        <div class="history-heading"><h3>🕘 История класса</h3><button class="btn btn-sm" id="history-refresh">Обновить</button></div>
+        ${groupHtml}
     </div>`;
-
-    box.querySelectorAll(".hist-del").forEach((b) =>
-        b.addEventListener("click", async () => {
-            const g = groups.get(b.dataset.key);
-            if (!g) return;
-            if (!confirm("Удалить это сообщение из истории?\n(В чатах учеников оно останется)")) return;
-            const { error: delErr } = await sb.from("messages").delete().in("id", g.ids);
-            if (delErr) return toast("Ошибка: " + delErr.message, true);
-            toast("Сообщение удалено из истории");
-            await loadClassHistory(box, list);
+    $("#history-refresh").addEventListener("click", () => loadBroadcastHistory(box, list));
+    box.querySelectorAll(".history-details-toggle").forEach((button) =>
+        button.addEventListener("click", () => $(`#delivery-details-${button.dataset.details}`).classList.toggle("hidden")));
+    box.querySelectorAll(".history-delete").forEach((button) =>
+        button.addEventListener("click", async () => {
+            const messages = groupList[Number(button.dataset.group)] || [];
+            const ids = messages.map((m) => m.id);
+            if (!ids.length) return;
+            if (!confirm("Удалить эту рассылку из истории?\nСообщения, уже доставленные в Telegram, останутся у учеников.")) return;
+            button.disabled = true;
+            const { error: deleteError } = await sb.from("messages").delete().in("id", ids);
+            if (deleteError) {
+                button.disabled = false;
+                return toast("Ошибка: " + deleteError.message, true);
+            }
+            toast("Рассылка удалена из истории");
+            await loadBroadcastHistory(box, list);
+        }));
+    box.querySelectorAll(".retry-message").forEach((button) =>
+        button.addEventListener("click", async () => {
+            button.disabled = true;
+            const { error: retryError } = await sb.from("messages").update({
+                delivery_status: "pending",
+                delivery_error: null,
+                delivery_attempts: 0,
+                delivery_available_at: new Date().toISOString(),
+                tg_delivered: false,
+            }).eq("id", button.dataset.messageId);
+            if (retryError) toast("Ошибка: " + retryError.message, true);
+            else toast("Сообщение возвращено в очередь");
+            await loadBroadcastHistory(box, list);
         }));
 }
 

@@ -912,6 +912,84 @@ td.g-sel { outline: 3px solid var(--primary); outline-offset: -3px; }
 /* ===================== ИСТОРИЯ: КНОПКА УДАЛЕНИЯ ===================== */
 .hist-date { display: flex; justify-content: space-between; align-items: center; gap: 10px; }
 
+/* ===================== ГАЛОЧКА "ПРОВЕРЕНО" (ученик) ===================== */
+.checked-tick {
+    display: inline-block;
+    color: #059669;
+    font-weight: 800;
+    font-size: 13px;
+    margin-left: 8px;
+}
+
+/* ===================== РАССЫЛКИ И ДОСТАВКА ===================== */
+.broadcast-actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 14px;
+}
+
+.broadcast-actions .btn { min-height: 44px; }
+
+.broadcast-form {
+    max-width: 640px;
+    margin-bottom: 14px;
+}
+
+.broadcast-form textarea,
+.broadcast-form select,
+.broadcast-form input[type="file"] {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 11px 12px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--card);
+    color: var(--text);
+    font: inherit;
+    font-size: 14px;
+}
+
+.broadcast-form label {
+    display: block;
+    margin: 12px 0 6px;
+    color: var(--text-muted);
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.broadcast-form .btn-primary { margin-top: 12px; min-height: 44px; }
+.broadcast-form button:disabled { opacity: .6; cursor: wait; }
+.broadcast-progress { min-height: 20px; margin-top: 10px; font-size: 14px; color: var(--text-muted); }
+.broadcast-history { max-width: 780px; margin-bottom: 16px; }
+.history-heading { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+.history-heading h3 { margin: 0; }
+.broadcast-group { padding: 14px 0; border-top: 1px solid var(--border); }
+.broadcast-group:first-of-type { margin-top: 12px; }
+.broadcast-group-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.delivery-summary { display: flex; flex-wrap: wrap; gap: 6px; margin: 10px 0; }
+.delivery-chip { padding: 3px 8px; border-radius: 999px; background: #f3f4f6; color: #374151; font-size: 12px; }
+.delivery-chip.delivery-delivered { background: #dcfce7; color: #166534; }
+.delivery-chip.delivery-failed,
+.delivery-chip.delivery-blocked { background: #fee2e2; color: #991b1b; }
+.delivery-chip.delivery-waiting_telegram,
+.delivery-chip.delivery-retry { background: #fef3c7; color: #92400e; }
+.delivery-details { margin-top: 10px; border-top: 1px solid var(--border); }
+.delivery-student { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--border); font-size: 13px; }
+.delivery-student:last-child { border-bottom: 0; }
+.delivery-status { color: var(--text-muted); }
+.delivery-status.delivery-delivered { color: #166534; }
+.delivery-status.delivery-failed,
+.delivery-status.delivery-blocked { color: #b91c1c; }
+.delivery-error { max-width: 520px; margin-top: 4px; color: #b91c1c; font-size: 12px; overflow-wrap: anywhere; }
+
+@media (max-width: 560px) {
+    .broadcast-actions { display: grid; grid-template-columns: 1fr; }
+    .broadcast-actions .btn { width: 100%; }
+    .delivery-student { align-items: flex-start; }
+    .delivery-error { max-width: 230px; }
+}
+
 /* ===================== ПОВОРОТ ФОТО ===================== */
 .photo-wrap { position: relative; display: block; }
 .rotate-btn {
@@ -936,12 +1014,3 @@ td.g-sel { outline: 3px solid var(--primary); outline-offset: -3px; }
 }
 .rotate-btn:hover { background: rgba(17, 24, 39, 0.92); opacity: 1; }
 .rotate-btn:disabled { cursor: default; }
-
-/* ===================== ГАЛОЧКА "ПРОВЕРЕНО" (ученик) ===================== */
-.checked-tick {
-    display: inline-block;
-    color: #059669;
-    font-weight: 800;
-    font-size: 13px;
-    margin-left: 8px;
-}
