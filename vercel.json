@@ -9,5 +9,11 @@
                 { "key": "X-Frame-Options", "value": "DENY" }
             ]
         }
+    ],
+    "rewrites": [
+        {
+            "source": "/audio/:path*",
+            "destination": "https://api.physfun.ru/storage/v1/object/public/message-audio/:path*"
+        }
     ]
 }
