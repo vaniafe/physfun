@@ -128,28 +128,59 @@ const DELIVERY_LABELS = {
     delivered: "Доставлено",
 };
 
-function newBroadcastId() {
-    if (window.crypto && typeof crypto.randomUUID === "function") return crypto.randomUUID();
-    /* Совместимость со старыми браузерами: формируем UUID v4 через getRandomValues. */
+function newUuid() {
+    const cryptoApi = window.crypto;
+    if (cryptoApi && typeof cryptoApi.randomUUID === "function") return cryptoApi.randomUUID();
+    /* randomUUID отсутствует в части браузеров. UUID здесь нужен только для
+       имён файлов и группировки рассылок, поэтому предусмотрен полный fallback. */
     const bytes = new Uint8Array(16);
-    crypto.getRandomValues(bytes);
+    if (cryptoApi && typeof cryptoApi.getRandomValues === "function") {
+        cryptoApi.getRandomValues(bytes);
+    } else {
+        for (let i = 0; i < bytes.length; i++) bytes[i] = Math.floor(Math.random() * 256);
+    }
     bytes[6] = (bytes[6] & 0x0f) | 0x40;
     bytes[8] = (bytes[8] & 0x3f) | 0x80;
     const hex = [...bytes].map((b) => b.toString(16).padStart(2, "0")).join("");
     return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
 }
 
+function withTimeout(promise, milliseconds, message) {
+    return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(message || "Сервер не ответил вовремя")), milliseconds);
+        Promise.resolve(promise).then((value) => {
+            clearTimeout(timer);
+            resolve(value);
+        }, (error) => {
+            clearTimeout(timer);
+            reject(error);
+        });
+    });
+}
+
+function errorText(error) {
+    return String(error?.message || error || "Неизвестная ошибка");
+}
+
+function showDataLoadError(container, title, error, retry) {
+    container.innerHTML = `<div class="error-msg" style="margin:30px 0">
+        <strong>${esc(title)}</strong><br>
+        Проверьте интернет и нажмите «Повторить». Сохранённые данные входа не удалены.<br>
+        <span>${esc(errorText(error))}</span><br>
+        <button type="button" class="btn" style="margin-top:14px">Повторить загрузку</button>
+    </div>`;
+    container.querySelector("button").addEventListener("click", retry);
+}
+
 async function queueBroadcast(recipients, payload) {
     if (!recipients.length) throw new Error("Нет учеников для выбранных получателей");
-    const broadcastId = newBroadcastId();
+    const broadcastId = newUuid();
     const now = new Date().toISOString();
     const rows = recipients.map((student) => ({
         student_id: student.id,
         sender: "teacher",
         text: payload.text,
-        message_type: payload.messageType || "text",
-        audio_url: payload.audioUrl || null,
-        audio_name: payload.audioName || null,
+        message_type: "text",
         broadcast_id: broadcastId,
         delivery_status: "pending",
         delivery_available_at: now,
@@ -176,24 +207,37 @@ $("#login-form").addEventListener("submit", async (e) => {
     showError(null);
     const login = $("#login-email").value.trim();
     const password = $("#login-password").value;
+    const submit = $("#login-form button[type=submit]");
+    if (submit) submit.disabled = true;
 
-    /* 1) пробуем учителя (Supabase Auth, логин = email) */
-    const { data: tData, error: tErr } = await sb.auth.signInWithPassword({
-        email: login, password,
-    });
-    if (!tErr && tData && tData.user) return; // showApp сработает через onAuthStateChange
+    try {
+        /* 1) пробуем учителя (Supabase Auth, логин = email) */
+        const { data: tData, error: tErr } = await withTimeout(sb.auth.signInWithPassword({
+            email: login, password,
+        }), 20000, "Сервер входа не ответил. Проверьте интернет.");
+        if (!tErr && tData && tData.user) return; // showApp сработает через onAuthStateChange
 
-    /* 2) пробуем ученика (таблица students) */
-    const sLogin = login.toLowerCase();
-    const { data, error } = await sb.rpc("student_login", { p_login: sLogin, p_password: password });
-    if (!error && data && data.length) {
-        studentCreds = { login: sLogin, password };
-        studentInfo = data[0];
-        saveStudentCreds();
-        showStudentApp();
-        return;
+        /* 2) пробуем ученика (таблица students) */
+        const sLogin = login.toLowerCase();
+        const { data, error } = await withTimeout(
+            sb.rpc("student_login", { p_login: sLogin, p_password: password }),
+            20000,
+            "Сервер не ответил при входе ученика. Проверьте интернет."
+        );
+        if (error) throw error;
+        if (data && data.length) {
+            studentCreds = { login: sLogin, password };
+            studentInfo = data[0];
+            saveStudentCreds();
+            await showStudentApp();
+            return;
+        }
+        showError("Неверный логин или пароль");
+    } catch (error) {
+        showError("Не удалось выполнить вход: " + errorText(error));
+    } finally {
+        if (submit) submit.disabled = false;
     }
-    showError("Неверный логин или пароль");
 });
 
 $("#logout-btn").addEventListener("click", async () => { await sb.auth.signOut(); });
@@ -369,7 +413,7 @@ function renderRegStep() {
                 const { data: me } = await sb.rpc("student_login", { p_login: reg.login, p_password: reg.password });
                 studentInfo = me[0];
                 toast("Регистрация завершена!");
-                showStudentApp();
+                await showStudentApp();
             } catch (e) {
                 showError("Ошибка: " + e.message);
                 btn.disabled = false; btn.textContent = "✅ Зарегистрироваться";
@@ -385,27 +429,30 @@ async function showStudentApp() {
     $("#login-screen").classList.add("hidden");
     $("#app").classList.add("hidden");
     $("#student-app").classList.remove("hidden");
-    await loadStudentData();
-    renderStudentPage();
+    if (await loadStudentData()) renderStudentPage();
 }
 
 async function loadStudentData() {
     $("#student-content").innerHTML = `<div class="loading">Загрузка…</div>`;
-    const [subs, dates, msgs, comms] = await Promise.all([
-        sb.rpc("get_my_submissions", { p_login: studentCreds.login, p_password: studentCreds.password }),
-        sb.rpc("get_class_dates", { p_school: studentInfo.school, p_class: studentInfo.class_number }),
-        sb.rpc("chat_get", { p_login: studentCreds.login, p_password: studentCreds.password }),
-        sb.rpc("get_my_comments", { p_login: studentCreds.login, p_password: studentCreds.password }),
-    ]);
-    if (subs.error || dates.error) {
-        $("#student-content").innerHTML = `<div class="error-msg" style="margin:30px 0">Ошибка загрузки данных.<br>${esc(subs.error?.message || dates.error?.message || "")}</div>`;
-        return;
+    try {
+        const [subs, dates, msgs, comms] = await withTimeout(Promise.all([
+            sb.rpc("get_my_submissions", { p_login: studentCreds.login, p_password: studentCreds.password }),
+            sb.rpc("get_class_dates", { p_school: studentInfo.school, p_class: studentInfo.class_number }),
+            sb.rpc("chat_get", { p_login: studentCreds.login, p_password: studentCreds.password }),
+            sb.rpc("get_my_comments", { p_login: studentCreds.login, p_password: studentCreds.password }),
+        ]), 30000, "Данные ученика не загрузились за 30 секунд");
+        const error = subs.error || dates.error || msgs.error || comms.error;
+        if (error) throw error;
+        studentSubmissions = subs.data || [];
+        studentClassDates = dates.data || [];
+        studentMsgs = msgs.data || [];
+        studentComms = {};
+        (comms.data || []).forEach((c) => { studentComms[String(c.date)] = c; });
+        return true;
+    } catch (error) {
+        showDataLoadError($("#student-content"), "Не удалось загрузить данные ученика", error, showStudentApp);
+        return false;
     }
-    studentSubmissions = subs.data || [];
-    studentClassDates = dates.data || [];
-    studentMsgs = msgs.data || [];
-    studentComms = {};
-    (comms.data || []).forEach((c) => { studentComms[String(c.date)] = c; });
 }
 
 let studentMsgs = [];
@@ -637,29 +684,29 @@ async function openSubmitPanel() {
    ============================================================ */
 async function loadData() {
     content.innerHTML = `<div class="loading">Загрузка…</div>`;
-    const [st, hw, sub, cal, gr, cm] = await Promise.all([
-        sb.from("students").select("*").order("last_name"),
-        sb.from("homeworks").select("*").order("due_date", { ascending: false }),
-        sb.from("submissions").select("*").order("submitted_at", { ascending: false }),
-        sb.from("class_calendar").select("*"),
-        sb.from("grades").select("*"),
-        sb.from("hw_comments").select("*"),
-    ]);
-    const err = st.error || hw.error || sub.error || cal.error;
-    if (err) {
-        content.innerHTML = `<div class="error-msg" style="margin:30px 0">Ошибка загрузки данных.
-            Проверьте config.js и что выполнены SQL-скрипты.<br>${esc(err.message)}</div>`;
-        return;
+    try {
+        const [st, hw, sub, cal, gr, cm] = await withTimeout(Promise.all([
+            sb.from("students").select("*").order("last_name"),
+            sb.from("homeworks").select("*").order("due_date", { ascending: false }),
+            sb.from("submissions").select("*").order("submitted_at", { ascending: false }),
+            sb.from("class_calendar").select("*"),
+            sb.from("grades").select("*"),
+            sb.from("hw_comments").select("*"),
+        ]), 30000, "Данные учителя не загрузились за 30 секунд");
+        const error = st.error || hw.error || sub.error || cal.error;
+        if (error) throw error;
+        state.students = st.data || [];
+        state.homeworks = hw.data || [];
+        state.submissions = sub.data || [];
+        state.calendar = cal.data || [];
+        state.grades = gr.error ? [] : (gr.data || []);
+        state.comments = cm.error ? [] : (cm.data || []);
+        updateBanner();
+        refreshUnread();
+        render();
+    } catch (error) {
+        showDataLoadError(content, "Не удалось загрузить данные учителя", error, loadData);
     }
-    state.students = st.data || [];
-    state.homeworks = hw.data || [];
-    state.submissions = sub.data || [];
-    state.calendar = cal.data || [];
-    state.grades = gr.error ? [] : (gr.data || []);      /* таблица grades появится после SQL */
-    state.comments = cm.error ? [] : (cm.data || []);    /* таблица hw_comments — после SQL */
-    updateBanner();
-    refreshUnread();
-    render();
 }
 
 function setTab(tab) {
@@ -707,28 +754,12 @@ function renderStudentsPage() {
         <p class="count-note">👥 Всего: ${list.length} учеников</p>
         <div class="broadcast-actions">
             <button class="btn" id="class-msg-btn">📨 Сообщение классу</button>
-            <button class="btn" id="audio-msg-btn">🎵 Аудиорассылка</button>
             <button class="btn" id="class-history-btn">🕘 История и доставка</button>
         </div>
         <div id="class-msg-form" class="form-card hidden broadcast-form">
             <h3>📨 Сообщение для ${esc(state.classNumber)} класса</h3>
             <textarea id="class-msg-text" rows="3" maxlength="3500" placeholder="Текст сообщения всем ученикам класса..."></textarea>
             <button class="btn btn-primary" id="class-msg-send">Поставить в очередь</button>
-        </div>
-        <div id="audio-msg-form" class="form-card hidden broadcast-form">
-            <h3>🎵 Аудиорассылка</h3>
-            <label for="audio-recipients">Кому отправить</label>
-            <select id="audio-recipients">
-                <option value="class">${esc(state.classNumber)} класс — ${esc(state.school)}</option>
-                <option value="school">Все ученики школы — ${esc(state.school)}</option>
-                <option value="all">Все ученики</option>
-            </select>
-            <label for="audio-file">Аудиофайл MP3 или M4A, до 45 МБ</label>
-            <input type="file" id="audio-file" accept=".mp3,.m4a,audio/mpeg,audio/mp4,audio/x-m4a">
-            <label for="audio-caption">Подпись (необязательно)</label>
-            <textarea id="audio-caption" rows="2" maxlength="900" placeholder="Например: послушайте эту песню к следующему уроку"></textarea>
-            <div id="audio-progress" class="broadcast-progress" aria-live="polite"></div>
-            <button class="btn btn-primary" id="audio-msg-send">Загрузить и поставить в очередь</button>
         </div>
         <div id="class-history" class="hidden broadcast-history"></div>
         <div class="students-grid" id="students-grid"></div>`;
@@ -756,12 +787,7 @@ function renderStudentsPage() {
     }
 
     $("#class-msg-btn").addEventListener("click", () => {
-        $("#audio-msg-form").classList.add("hidden");
         $("#class-msg-form").classList.toggle("hidden");
-    });
-    $("#audio-msg-btn").addEventListener("click", () => {
-        $("#class-msg-form").classList.add("hidden");
-        $("#audio-msg-form").classList.toggle("hidden");
     });
 
     $("#class-msg-send").addEventListener("click", async () => {
@@ -779,59 +805,6 @@ function renderStudentsPage() {
             toast(`Сообщение поставлено в очередь: ${list.length} ученикам`);
         } catch (error) {
             toast("Не удалось создать рассылку: " + error.message, true);
-        } finally {
-            button.disabled = false;
-        }
-    });
-
-    $("#audio-msg-send").addEventListener("click", async () => {
-        const file = $("#audio-file").files[0];
-        if (!file) return toast("Выберите аудиофайл", true);
-        const lowerName = file.name.toLowerCase();
-        if (!lowerName.endsWith(".mp3") && !lowerName.endsWith(".m4a")) {
-            return toast("Нужен файл MP3 или M4A", true);
-        }
-        if (!file.size) return toast("Выбран пустой файл", true);
-        if (file.size > 45 * 1024 * 1024) return toast("Файл больше 45 МБ", true);
-        const recipientMode = $("#audio-recipients").value;
-        const recipients = recipientMode === "all" ? state.students
-            : recipientMode === "school" ? state.students.filter((s) => s.school === state.school)
-            : list;
-        if (!recipients.length) return toast("В выбранной группе нет учеников", true);
-
-        const button = $("#audio-msg-send");
-        const progress = $("#audio-progress");
-        button.disabled = true;
-        const extension = lowerName.endsWith(".m4a") ? ".m4a" : ".mp3";
-        const path = `broadcasts/${newBroadcastId()}${extension}`;
-        let uploaded = false;
-        try {
-            progress.textContent = "Загрузка аудио в Supabase…";
-            const { error: uploadError } = await sb.storage.from("message-audio").upload(path, file, {
-                contentType: file.type || (extension === ".mp3" ? "audio/mpeg" : "audio/mp4"),
-                upsert: false,
-            });
-            if (uploadError) throw uploadError;
-            uploaded = true;
-            const audioUrl = sb.storage.from("message-audio").getPublicUrl(path).data.publicUrl;
-            progress.textContent = `Создание очереди для ${recipients.length} учеников…`;
-            await queueBroadcast(recipients, {
-                messageType: "audio",
-                text: ($("#audio-caption").value || "").trim() || file.name,
-                audioUrl,
-                audioName: file.name,
-            });
-            $("#audio-file").value = "";
-            $("#audio-caption").value = "";
-            progress.textContent = "";
-            $("#audio-msg-form").classList.add("hidden");
-            toast(`Аудио поставлено в очередь: ${recipients.length} ученикам`);
-        } catch (error) {
-            if (uploaded) {
-                try { await sb.storage.from("message-audio").remove([path]); } catch (_) {}
-            }
-            progress.textContent = "Ошибка: " + error.message;
-            toast("Аудиорассылка не создана", true);
         } finally {
             button.disabled = false;
         }
@@ -882,6 +855,7 @@ async function loadBroadcastHistory(box, list) {
         return `<section class="broadcast-group">
             <div class="hist-date">${first.message_type === "audio" ? "🎵" : "📨"} ${esc(fmtTime(first.created_at))}</div>
             <div class="hist-text">${first.message_type === "audio" ? `<strong>${esc(first.audio_name || "Аудиофайл")}</strong><br>` : ""}${esc(first.text)}</div>
+            ${first.message_type === "audio" ? `<div class="empty-note">Старая аудиорассылка. Отправка аудио отключена; запись сохранена только для истории.</div>` : ""}
             <div class="delivery-summary">${summary}</div>
             <div class="broadcast-group-actions">
                 <button class="btn btn-sm history-details-toggle" data-details="${index}">Получатели</button>
@@ -894,7 +868,7 @@ async function loadBroadcastHistory(box, list) {
                         <div><strong>${esc(student.last_name || "")} ${esc(student.first_name || "")}</strong><br>
                         <span class="delivery-status delivery-${esc(m.delivery_status)}">${esc(DELIVERY_LABELS[m.delivery_status] || m.delivery_status)}</span>
                         ${m.delivery_error ? `<div class="delivery-error">${esc(m.delivery_error)}</div>` : ""}</div>
-                        ${m.delivery_status === "failed" ? `<button class="btn btn-sm retry-message" data-message-id="${m.id}">Повторить</button>` : ""}
+                        ${m.delivery_status === "failed" && m.message_type !== "audio" ? `<button class="btn btn-sm retry-message" data-message-id="${m.id}">Повторить</button>` : ""}
                     </div>`;
                 }).join("")}
             </div>
@@ -1458,7 +1432,7 @@ async function rotatePhotoFile(url, bucket) {
     if (!blob) throw new Error("ошибка обработки изображения");
     /* Не перезаписываем исходник: обычная загрузка нового файла работает
        без x-upsert и не требует разрешения UPDATE для Storage. */
-    const rotatedPath = `rotated/${crypto.randomUUID()}.jpg`;
+    const rotatedPath = `rotated/${newUuid()}.jpg`;
     await retryNetworkRequest(async () => {
         const { error } = await sb.storage.from(bucket).upload(rotatedPath, blob, {
             upsert: false,
@@ -1887,38 +1861,69 @@ function renderStatsPage() {
    ============================================================ */
 async function initAuth() {
     loadStudentCreds();
-    const { data: { session } } = await sb.auth.getSession();
+    let session = null;
+    try {
+        const result = await withTimeout(sb.auth.getSession(), 10000, "Не удалось прочитать сохранённую сессию");
+        session = result.data?.session || null;
+    } catch (error) {
+        /* После смены ключей Supabase старая Auth-сессия может быть повреждена.
+           Удаляем только её, не трогая логин и пароль ученика. */
+        console.warn("Старая сессия учителя очищена:", errorText(error));
+        try { await sb.auth.signOut({ scope: "local" }); } catch (_) {}
+    }
     state.user = session?.user || null;
-    showApp();
 
-    sb.auth.onAuthStateChange((_event, session) => {
-        state.user = session?.user || null;
-        showApp();
+    sb.auth.onAuthStateChange((_event, nextSession) => {
+        state.user = nextSession?.user || null;
+        showApp().catch((error) => {
+            console.error("Ошибка запуска:", error);
+            showLogin();
+            showError("Не удалось открыть приложение. Обновите страницу.");
+        });
     });
+    await showApp();
 }
 
-function showApp() {
+async function showApp() {
+    showError(null);
     if (state.user) {
         $("#login-screen").classList.add("hidden");
         $("#student-app").classList.add("hidden");
         $("#app").classList.remove("hidden");
         $("#user-email").textContent = state.user.email || "";
         startUnreadTimer();
-        loadData();
+        await loadData();
         return;
     }
     if (studentCreds && studentCreds.login) {
-        /* автовход ученика, если данные сохранены */
-        sb.rpc("student_login", { p_login: studentCreds.login, p_password: studentCreds.password })
-            .then(({ data }) => {
-                if (data && data.length) {
-                    studentInfo = data[0];
-                    showStudentApp();
-                } else {
-                    studentCreds = null; saveStudentCreds();
-                    showLogin();
-                }
-            });
+        /* Показываем понятный статус вместо пустого экрана во время автовхода. */
+        $("#login-screen").classList.add("hidden");
+        $("#app").classList.add("hidden");
+        $("#student-app").classList.remove("hidden");
+        $("#student-content").innerHTML = `<div class="loading">Проверяем сохранённый вход…</div>`;
+        try {
+            const { data, error } = await withTimeout(sb.rpc("student_login", {
+                p_login: studentCreds.login, p_password: studentCreds.password,
+            }), 20000, "Сервер не ответил при автоматическом входе");
+            if (error) throw error;
+            if (data && data.length) {
+                studentInfo = data[0];
+                await showStudentApp();
+            } else {
+                /* Только подтверждённо неверные данные разрешается удалить. */
+                studentCreds = null;
+                saveStudentCreds();
+                showLogin();
+                showError("Сохранённый вход устарел. Введите логин и пароль ещё раз.");
+            }
+        } catch (error) {
+            showDataLoadError(
+                $("#student-content"),
+                "Не удалось войти с сохранёнными данными",
+                error,
+                showApp
+            );
+        }
         return;
     }
     showLogin();
@@ -1936,4 +1941,9 @@ document.querySelectorAll("#main-tabs .tab").forEach((b) =>
 const bannerEl = $("#teacher-banner");
 if (bannerEl) bannerEl.addEventListener("click", () => setTab("calendar"));
 
-initAuth();
+initAuth().catch((error) => {
+    console.error("Критическая ошибка запуска:", error);
+    state.user = null;
+    showLogin();
+    showError("Не удалось запустить сайт: " + errorText(error));
+});
