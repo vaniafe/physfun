@@ -1420,16 +1420,49 @@ async function retryNetworkRequest(operation, attempts = 3) {
     throw lastError;
 }
 
+async function loadImageForRotation(url) {
+    let lastError;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+        try {
+            /* После первого поворота браузер мог сохранить неудачный ответ для
+               нового URL. Скачиваем свежую копию без кэша, а затем создаём
+               изображение из локального Blob — canvas при этом не блокируется. */
+            const loadUrl = new URL(url, window.location.href);
+            loadUrl.searchParams.set("_rotation_load", `${Date.now()}-${attempt}`);
+            const response = await fetch(loadUrl.toString(), {
+                mode: "cors",
+                credentials: "omit",
+                cache: "no-store",
+            });
+            if (!response.ok) throw new Error(`сервер фото ответил HTTP ${response.status}`);
+            const blob = await response.blob();
+            if (!blob.size) throw new Error("сервер вернул пустой файл");
+            const objectUrl = URL.createObjectURL(blob);
+            const img = new Image();
+            try {
+                await new Promise((ok, bad) => {
+                    img.onload = ok;
+                    img.onerror = () => bad(new Error("браузер не смог прочитать скачанное изображение"));
+                    img.src = objectUrl;
+                });
+            } catch (error) {
+                URL.revokeObjectURL(objectUrl);
+                throw error;
+            }
+            URL.revokeObjectURL(objectUrl);
+            return img;
+        } catch (error) {
+            lastError = error;
+            if (attempt < 3) await new Promise((resolve) => setTimeout(resolve, 700 * attempt));
+        }
+    }
+    throw new Error("не удалось загрузить фото после 3 попыток: " + errorText(lastError));
+}
+
 async function rotatePhotoFile(url, bucket) {
     const path = storagePath(url, bucket);
     if (!path) throw new Error("не удалось определить путь файла");
-    const img = new Image();
-    img.crossOrigin = "anonymous";
-    await new Promise((ok, bad) => {
-        img.onload = ok;
-        img.onerror = () => bad(new Error("не удалось загрузить фото"));
-        img.src = url;
-    });
+    const img = await loadImageForRotation(url);
     const canvas = document.createElement("canvas");
     canvas.width = img.naturalHeight;
     canvas.height = img.naturalWidth;
