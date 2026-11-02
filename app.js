@@ -732,6 +732,9 @@ function openStudent(id) {
 }
 
 function render() {
+    // На широком экране журнал оценок может использовать всю ширину окна.
+    // Класс автоматически снимается при переходе в другую вкладку или профиль.
+    content.classList.toggle("content-grades", !state.selectedStudent && state.tab === "grades");
     if (state.selectedStudent) return renderStudentPageT(state.selectedStudent);
     if (state.tab === "students") renderStudentsPage();
     else if (state.tab === "homeworks") renderHomeworksPage();

@@ -1014,3 +1014,11 @@ td.g-sel { outline: 3px solid var(--primary); outline-offset: -3px; }
 }
 .rotate-btn:hover { background: rgba(17, 24, 39, 0.92); opacity: 1; }
 .rotate-btn:disabled { cursor: default; }
+
+/* ===================== ШИРОКИЙ ЖУРНАЛ ОЦЕНОК ===================== */
+/* Только компьютер: журнал использует экран целиком, а не лимит 1200 px.
+   Если даже этой ширины не хватает, остаётся прокрутка внутри таблицы.
+   На телефонах и планшетах до 1024 px поведение не меняется. */
+@media (min-width: 1024px) {
+    #content.content-grades { max-width: none; }
+}
