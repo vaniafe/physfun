@@ -517,12 +517,16 @@ function renderStudentWorks() {
 
     wrap.innerHTML = "";
     sorted.forEach(([dateKey, items]) => {
-        const badge = STATUS_LABELS[items[0].status] || STATUS_LABELS.pending;
+        /* Ученику показываем только факт проверки, без оценки и статуса «Оценено». */
+        const isChecked = items[0].status !== "pending";
+        const badge = isChecked
+            ? { text: "✅ Проверена", cls: "badge-checked" }
+            : { text: "⏳ Не проверена", cls: "badge-pending" };
         const block = document.createElement("div");
         block.className = "work-block";
         block.innerHTML = `
             <div class="work-block-head">
-                <div class="work-date">📅 ${esc(fmtDate(dateKey))}${items[0].status !== "pending" ? ` <span class="checked-tick" title="Работа проверена учителем">✔ Работа проверена</span>` : ""}${items[0].grade ? ` &nbsp;<span class="badge badge-graded">Оценка: ${items[0].grade}</span>` : ""}</div>
+                <div class="work-date">📅 ${esc(fmtDate(dateKey))}</div>
                 <span class="badge ${badge.cls}">${badge.text}</span>
             </div>
             ${studentComms[dateKey] ? `<div class="hw-comment"><b>💬 Комментарий учителя:</b> ${esc(studentComms[dateKey].text)}</div>` : ""}
