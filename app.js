@@ -693,15 +693,45 @@ async function openSubmitPanel() {
 }
 
 /* ============================================================
-   ЧАСТЬ УЧИТЕЛЯ (без изменений)
+   ЧАСТЬ УЧИТЕЛЯ
    ============================================================ */
+
+/* Загружаем все работы частями: PostgREST может ограничивать один ответ 1000 строками. */
+async function loadAllSubmissions() {
+    const pageSize = 500;
+    const rows = [];
+
+    for (let from = 0; ; from += pageSize) {
+        const { data, error } = await sb.from("submissions")
+            .select("*")
+            .order("submitted_at", { ascending: true })
+            .order("id", { ascending: true })
+            .range(from, from + pageSize - 1);
+
+        if (error) return { data: null, error };
+
+        const batch = data || [];
+        rows.push(...batch);
+        if (batch.length < pageSize) break;
+    }
+
+    /* Сохраняем прежний порядок: сначала самые новые работы. */
+    rows.sort((a, b) => {
+        const byDate = String(b.submitted_at || "").localeCompare(String(a.submitted_at || ""));
+        if (byDate) return byDate;
+        return String(b.id || "").localeCompare(String(a.id || ""));
+    });
+
+    return { data: rows, error: null };
+}
+
 async function loadData() {
     content.innerHTML = `<div class="loading">Загрузка…</div>`;
     try {
         const [st, hw, sub, cal, gr, cm] = await withTimeout(Promise.all([
             sb.from("students").select("*").order("last_name"),
             sb.from("homeworks").select("*").order("due_date", { ascending: false }),
-            sb.from("submissions").select("*").order("submitted_at", { ascending: false }),
+            loadAllSubmissions(),
             sb.from("class_calendar").select("*"),
             sb.from("grades").select("*"),
             sb.from("hw_comments").select("*"),
